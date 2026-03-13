@@ -24,6 +24,12 @@ function sanitizeInline(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+function sanitizeNarrativeInline(value: string): string {
+  return sanitizeInline(value)
+    .replace(/[\u00ad\u200b\u200c\u200d]/g, "")
+    .replace(/[‐‑‒–—]/g, "-");
+}
+
 function dynamicToolName(payload: Record<string, unknown>): string | null {
   return asString(mapPath(payload, ["params", "tool"])) ?? asString(mapPath(payload, ["params", "name"]));
 }
@@ -37,13 +43,128 @@ function extractCommand(payload: Record<string, unknown>): string | null {
   );
 }
 
+function extractLinearQuery(payload: Record<string, unknown>): string | null {
+  const args = mapPath(payload, ["params", "arguments"]);
+  if (typeof args === "string") {
+    return args;
+  }
+
+  if (args && typeof args === "object" && !Array.isArray(args)) {
+    return asString((args as Record<string, unknown>).query);
+  }
+
+  return null;
+}
+
+function extractDiff(payload: Record<string, unknown>): string | null {
+  return asString(mapPath(payload, ["params", "diff"])) ?? asString(mapPath(payload, ["params", "msg", "payload", "diff"]));
+}
+
 function countDiffLines(payload: Record<string, unknown>): number | null {
-  const diff = asString(mapPath(payload, ["params", "diff"])) ?? asString(mapPath(payload, ["params", "msg", "payload", "diff"]));
+  const diff = extractDiff(payload);
   if (!diff) {
     return null;
   }
 
   return diff.split("\n").filter((line) => line.trim().length > 0).length;
+}
+
+function extractEditedFiles(payload: Record<string, unknown>): string[] {
+  const diff = extractDiff(payload);
+  if (!diff) {
+    return [];
+  }
+
+  const files = new Set<string>();
+  for (const line of diff.split("\n")) {
+    const diffGitMatch = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
+    if (diffGitMatch) {
+      files.add(diffGitMatch[2]);
+      continue;
+    }
+
+    const plusPlusMatch = line.match(/^\+\+\+ b\/(.+)$/);
+    if (plusPlusMatch && plusPlusMatch[1] !== "/dev/null") {
+      files.add(plusPlusMatch[1]);
+    }
+  }
+
+  return [...files];
+}
+
+function summarizeEditedFiles(files: string[]): string {
+  if (files.length === 0) {
+    return "edited files";
+  }
+
+  const shown = files.slice(0, 3);
+  const suffix = files.length > shown.length ? `, +${files.length - shown.length} more` : "";
+  return `edited ${files.length} file${files.length === 1 ? "" : "s"}: ${shown.join(", ")}${suffix}`;
+}
+
+function humanizeCommand(command: string, mode: "start" | "finish"): string {
+  const compact = sanitizeInline(command);
+  const lower = compact.toLowerCase();
+  const prefix = mode === "start" ? "running command" : "finished command";
+
+  if (/\bgh\s+pr\s+create\b/.test(lower)) {
+    return mode === "start" ? "submitting pull request" : "pull request submitted";
+  }
+
+  if (/\bgh\s+pr\s+(view|checks|comment|review)\b/.test(lower) || /\bgh\s+api\b/.test(lower) && /\bpulls?\b/.test(lower)) {
+    return mode === "start" ? "checking pull request status" : "pull request check finished";
+  }
+
+  if (/\bgit\s+push\b/.test(lower)) {
+    return mode === "start" ? "pushing branch updates" : "branch push finished";
+  }
+
+  if (/\bgit\s+commit\b/.test(lower)) {
+    return mode === "start" ? "committing changes" : "commit finished";
+  }
+
+  if (/\b(yarn|npm|pnpm|bun)\b.*\b(test|check|build|lint)\b/.test(lower) || /\b(vitest|jest|pytest|mix test|cargo test)\b/.test(lower)) {
+    return mode === "start" ? "running validation" : "validation command finished";
+  }
+
+  if (/\bgit\s+(status|diff|show)\b/.test(lower)) {
+    return mode === "start" ? "reviewing repository state" : "repository inspection finished";
+  }
+
+  if (/\b(rg|sed|cat|ls|find)\b/.test(lower)) {
+    return mode === "start" ? "reading project files" : "file inspection finished";
+  }
+
+  return `${prefix}: ${compact}`;
+}
+
+function humanizeLinearToolRequest(payload: Record<string, unknown>): string | null {
+  const query = extractLinearQuery(payload);
+  if (!query) {
+    return null;
+  }
+
+  const normalized = query.replace(/\s+/g, " ").toLowerCase();
+  if (normalized.includes("commentcreate") || normalized.includes("commentupdate")) {
+    return "updating workpad in Linear";
+  }
+  if (normalized.includes("issueupdate")) {
+    if (normalized.includes("stateid") || normalized.includes("state")) {
+      return "changing task status in Linear";
+    }
+    return "updating task in Linear";
+  }
+  if (normalized.includes("attachmentcreate") || normalized.includes("attachmentlink") || normalized.includes("link")) {
+    return "linking pull request in Linear";
+  }
+  if (normalized.includes("issuecreate")) {
+    return "creating follow-up task in Linear";
+  }
+  if (normalized.includes("issue(") || normalized.includes("issues(") || normalized.includes("project(") || normalized.includes("comments(")) {
+    return "reading Linear context";
+  }
+
+  return "querying Linear";
 }
 
 function tokenUsageText(payload: Record<string, unknown>): string | null {
@@ -87,6 +208,11 @@ function humanizeWrapperEvent(suffix: string, payload: Record<string, unknown>):
     case "user_message":
       return "user message received";
     case "turn_diff": {
+      const files = extractEditedFiles(payload);
+      if (files.length > 0) {
+        return summarizeEditedFiles(files);
+      }
+
       const lines = countDiffLines(payload);
       return lines === null ? "turn diff updated" : `turn diff updated (${lines} lines)`;
     }
@@ -96,10 +222,12 @@ function humanizeWrapperEvent(suffix: string, payload: Record<string, unknown>):
     }
     case "exec_command_begin": {
       const command = extractCommand(payload);
-      return command ? sanitizeInline(command) : "command started";
+      return command ? humanizeCommand(command, "start") : "command started";
     }
-    case "exec_command_end":
-      return "command completed";
+    case "exec_command_end": {
+      const command = extractCommand(payload);
+      return command ? humanizeCommand(command, "finish") : "command completed";
+    }
     case "exec_command_output_delta":
       return "command output streaming";
     case "agent_message_delta":
@@ -143,6 +271,9 @@ export function humanizeCodexMethod(method: string, payload: Record<string, unkn
     }
     case "item/tool/call": {
       const tool = dynamicToolName(payload);
+      if (tool === "linear_graphql") {
+        return humanizeLinearToolRequest(payload) ?? "querying Linear";
+      }
       return tool ? `dynamic tool call requested (${tool})` : "dynamic tool call requested";
     }
     case "item/commandExecution/outputDelta":
@@ -157,6 +288,11 @@ export function humanizeCodexMethod(method: string, payload: Record<string, unkn
     case "item/reasoning/summaryTextDelta":
       return "reasoning streaming";
     case "turn/diff/updated": {
+      const files = extractEditedFiles(payload);
+      if (files.length > 0) {
+        return summarizeEditedFiles(files);
+      }
+
       const lines = countDiffLines(payload);
       return lines === null ? "turn diff updated" : `turn diff updated (${lines} lines)`;
     }
@@ -180,6 +316,24 @@ const SUMMARY_NOTIFICATION_PREFIXES = [
   "dynamic tool call requested",
   "dynamic tool call completed",
   "dynamic tool call failed",
+  "reading Linear context",
+  "updating workpad in Linear",
+  "changing task status in Linear",
+  "updating task in Linear",
+  "linking pull request in Linear",
+  "creating follow-up task in Linear",
+  "querying Linear",
+  "submitting pull request",
+  "pull request submitted",
+  "checking pull request status",
+  "pull request check finished",
+  "pushing branch updates",
+  "branch push finished",
+  "committing changes",
+  "commit finished",
+  "running validation",
+  "validation command finished",
+  "edited ",
   "rate limits updated",
   "linear mcp"
 ] as const;
@@ -188,6 +342,12 @@ const TRANSCRIPT_NOTIFICATION_PREFIXES = [
   ...SUMMARY_NOTIFICATION_PREFIXES,
   "thread token usage updated",
   "token count update",
+  "running command:",
+  "finished command:",
+  "reading project files",
+  "file inspection finished",
+  "reviewing repository state",
+  "repository inspection finished",
   "command completed",
   "command output streaming",
   "file change output streaming",
@@ -224,11 +384,38 @@ export function classifyHumanizedCodexMessage(
     return "reasoning";
   }
 
-  if (message.startsWith("command output streaming") || message.startsWith("command completed")) {
+  if (
+    message.startsWith("command output streaming") ||
+    message.startsWith("command completed") ||
+    message.startsWith("running command:") ||
+    message.startsWith("finished command:") ||
+    message.startsWith("submitting pull request") ||
+    message.startsWith("pull request submitted") ||
+    message.startsWith("pushing branch updates") ||
+    message.startsWith("branch push finished") ||
+    message.startsWith("committing changes") ||
+    message.startsWith("commit finished") ||
+    message.startsWith("running validation") ||
+    message.startsWith("validation command finished") ||
+    message.startsWith("reading project files") ||
+    message.startsWith("file inspection finished") ||
+    message.startsWith("reviewing repository state") ||
+    message.startsWith("repository inspection finished") ||
+    message.startsWith("edited ")
+  ) {
     return "command";
   }
 
-  if (message.startsWith("dynamic tool call")) {
+  if (
+    message.startsWith("dynamic tool call") ||
+    message.startsWith("reading Linear context") ||
+    message.startsWith("updating workpad in Linear") ||
+    message.startsWith("changing task status in Linear") ||
+    message.startsWith("updating task in Linear") ||
+    message.startsWith("linking pull request in Linear") ||
+    message.startsWith("creating follow-up task in Linear") ||
+    message.startsWith("querying Linear")
+  ) {
     return "tool";
   }
 
@@ -251,7 +438,7 @@ export function normalizeTranscriptMessage(
   kind: "status" | "message" | "reasoning" | "command" | "tool" | "approval" | "system",
   message: string
 ): string | null {
-  const trimmed = message.trim();
+  const trimmed = sanitizeNarrativeInline(message).trim();
   if (trimmed.length === 0) {
     return null;
   }
@@ -274,7 +461,7 @@ export function isNarrativeTranscriptKind(
 
 export function stitchTranscriptMessages(previous: string, next: string): string {
   const left = previous.trim();
-  const right = next.trim();
+  const right = next.trim().replace(/^-\s+/, "");
   if (!left) {
     return right;
   }

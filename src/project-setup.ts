@@ -457,10 +457,9 @@ export async function updateProjectSetup(
   setNestedString(root, ['workspace', 'root'], '.orchestrai/workspaces');
   setNestedString(root, ['codex', 'command'], DEFAULT_CODEX_COMMAND);
   setNestedString(root, ['codex', 'approval_policy'], 'never');
-  setNestedString(root, ['codex', 'thread_sandbox'], 'workspace-write');
+  setNestedString(root, ['codex', 'thread_sandbox'], 'danger-full-access');
   setNestedValue(root, ['codex', 'turn_sandbox_policy'], {
-    type: 'workspaceWrite',
-    networkAccess: true,
+    type: 'dangerFullAccess',
   });
   setNestedString(root, ['hooks', 'timeout_ms'], '60000');
   setNestedString(root, ['server', 'port'], '-1');
@@ -614,10 +613,9 @@ function renderWorkflowMarkdown(input: {
     codex: {
       command: DEFAULT_CODEX_COMMAND,
       approval_policy: 'never',
-      thread_sandbox: 'workspace-write',
+      thread_sandbox: 'danger-full-access',
       turn_sandbox_policy: {
-        type: 'workspaceWrite',
-        networkAccess: true,
+        type: 'dangerFullAccess',
       },
     },
     server: {

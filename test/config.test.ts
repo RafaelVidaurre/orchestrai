@@ -122,7 +122,7 @@ describe("buildServiceConfig", () => {
         mcp_elicitations: true
       }
     });
-    expect(config.codex.threadSandbox).toBe("workspace-write");
+    expect(config.codex.threadSandbox).toBe("danger-full-access");
     expect(config.codex.turnSandboxPolicy).toBeNull();
   });
 

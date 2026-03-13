@@ -26,6 +26,7 @@ import {
   RefreshCw,
   Settings2,
   SunMedium,
+  Terminal,
   Trash2
 } from "lucide-react";
 
@@ -42,6 +43,7 @@ import type {
   StatusRunningEntry,
   StatusSnapshot
 } from "./domain";
+import { buildTranscriptRenderBlocks, commandIconTone, commandTooltip } from "./transcript-render";
 import { formatElapsedShort } from "./tui-layout";
 
 type ThemePreference = "system" | "light" | "dark";
@@ -119,11 +121,15 @@ function DashboardApp() {
   }, [themePreference]);
 
   useEffect(() => {
-    if (selectedAgentIssueId && activeAgents.some((entry) => entry.issue_id === selectedAgentIssueId)) {
+    if (!selectedAgentIssueId) {
       return;
     }
 
-    setSelectedAgentIssueId(activeAgents[0]?.issue_id ?? null);
+    if (activeAgents.some((entry) => entry.issue_id === selectedAgentIssueId)) {
+      return;
+    }
+
+    setSelectedAgentIssueId(null);
   }, [activeAgents, selectedAgentIssueId]);
 
   useEffect(() => {
@@ -924,7 +930,7 @@ function AgentTable(props: {
   entries: StatusRunningEntry[];
   nowMs: number;
   selectedIssueId: string | null;
-  onSelectIssueId: (issueId: string) => void;
+  onSelectIssueId: (issueId: string | null) => void;
 }) {
   if (props.entries.length === 0) {
     return <EmptyState title="No active agents" body="When a ticket is picked up, it will appear here with its runtime and latest progress signal." />;
@@ -946,30 +952,47 @@ function AgentTable(props: {
           {props.entries.map((entry) => {
             const secondary = entry.recent_activity[1]?.message ?? `${entry.turn_count} turns completed`;
             const selected = props.selectedIssueId === entry.issue_id;
+            const agentState = deriveAgentState(entry);
+            const awaitingReview = isAwaitingHumanReview(entry.state);
 
             return (
               <Fragment key={entry.issue_id}>
-                <tr className={joinClassName("agent-row", selected ? "selected" : null)}>
+                <tr className={joinClassName("agent-row", selected ? "selected" : null, awaitingReview ? "awaiting-review" : null)}>
                   <td>
-                    <button
-                      type="button"
-                      className={joinClassName("agent-row-button", selected ? "selected" : null)}
-                      aria-expanded={selected}
-                      onClick={() => {
-                        props.onSelectIssueId(entry.issue_id);
-                      }}
-                    >
-                      <span className={joinClassName("agent-row-chevron", selected ? "expanded" : null)}>
-                        <ChevronRight size={14} />
-                      </span>
-                      <span className="agent-row-copy">
-                        <span className="row-title">{entry.identifier}</span>
-                        <span className="row-subtitle">{entry.title}</span>
-                      </span>
-                    </button>
+                    <div className="agent-row-ticket-cell">
+                      <button
+                        type="button"
+                        className={joinClassName("agent-row-button", selected ? "selected" : null)}
+                        aria-expanded={selected}
+                        onClick={() => {
+                          props.onSelectIssueId(selected ? null : entry.issue_id);
+                        }}
+                      >
+                        <span className={joinClassName("agent-row-chevron", selected ? "expanded" : null)}>
+                          <ChevronRight size={14} />
+                        </span>
+                        <span className="agent-row-copy">
+                          <span className="row-title-line">
+                            <span className="row-title">{entry.identifier}</span>
+                          </span>
+                          <span className="row-subtitle">{entry.title}</span>
+                        </span>
+                      </button>
+                      {entry.issue_url ? (
+                        <a
+                          className="inline-link-button"
+                          href={entry.issue_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          aria-label={`Open ${entry.identifier} in a new tab`}
+                        >
+                          <ArrowUpRight size={13} />
+                        </a>
+                      ) : null}
+                    </div>
                   </td>
                   <td>
-                    <span className="phase-badge">{humanizePhase(entry.phase)}</span>
+                    <span className={joinClassName("phase-badge", agentState.tone)}>{agentState.label}</span>
                     <div className="row-subtitle">{entry.state}</div>
                   </td>
                   <td className="mono">{formatElapsedShort(props.nowMs - entry.started_at_ms)}</td>
@@ -1020,16 +1043,25 @@ function EventTimeline(props: { events: StatusSnapshot["recent_events"] }) {
 
 function AgentInlineTranscript(props: { entry: StatusRunningEntry; nowMs: number }) {
   const { entry } = props;
+  const agentState = deriveAgentState(entry);
   return (
     <div className="agent-detail-panel">
       <div className="agent-detail-header">
         <div>
           <div className="agent-detail-kicker">Live transcript</div>
-          <div className="row-title">{entry.identifier}</div>
+          <div className="row-title-line">
+            <div className="row-title">{entry.identifier}</div>
+            {entry.issue_url ? (
+              <a className="detail-link subtle" href={entry.issue_url} target="_blank" rel="noreferrer">
+                <span>Open task</span>
+                <ArrowUpRight size={12} />
+              </a>
+            ) : null}
+          </div>
           <div className="row-subtitle">{entry.title}</div>
         </div>
         <div className="agent-detail-meta">
-          <span className="phase-badge">{humanizePhase(entry.phase)}</span>
+          <span className={joinClassName("phase-badge", agentState.tone)}>{agentState.label}</span>
           <span className="meta-chip">
             <span>{formatInteger(entry.codex_total_tokens)} tokens</span>
           </span>
@@ -1043,11 +1075,35 @@ function AgentInlineTranscript(props: { entry: StatusRunningEntry; nowMs: number
         {entry.transcript_activity.length === 0 ? (
           <EmptyState title="No transcript yet" body="This agent has not emitted detailed Codex activity yet." />
         ) : (
-          entry.transcript_activity.slice(0, 80).map((transcriptEntry, index) => (
-            <TranscriptItem key={`${transcriptEntry.timestamp}:${transcriptEntry.kind}:${index}`} entry={transcriptEntry} />
+          buildTranscriptRenderBlocks(entry.transcript_activity.slice(0, 80)).map((block, index) => (
+            block.type === "command-group" ? (
+              <CommandStrip key={`commands:${block.entries[0]?.timestamp ?? index}:${index}`} entries={block.entries} />
+            ) : (
+              <TranscriptItem key={`${block.entry.timestamp}:${block.entry.kind}:${index}`} entry={block.entry} />
+            )
           ))
         )}
       </div>
+    </div>
+  );
+}
+
+function CommandStrip(props: { entries: AgentTranscriptEntry[] }) {
+  return (
+    <div className="transcript-command-strip" aria-label={`${props.entries.length} commands`}>
+      {props.entries.map((entry, index) => {
+        const tone = commandIconTone(entry);
+        return (
+          <span
+            key={`${entry.timestamp}:${entry.message}:${index}`}
+            className={joinClassName("transcript-command-icon", tone)}
+            title={commandTooltip(entry)}
+            aria-label={commandTooltip(entry)}
+          >
+            <Terminal size={14} />
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -1319,6 +1375,92 @@ function humanizePhase(phase: string): string {
     default:
       return phase;
   }
+}
+
+function deriveAgentState(entry: StatusRunningEntry): { label: string; tone: string } {
+  const state = normalizeLabel(entry.state);
+  const activity = normalizeLabel(entry.activity);
+  const recent = normalizeLabel(entry.recent_activity[0]?.message ?? "");
+
+  if (isAwaitingHumanReview(entry.state)) {
+    return { label: "Awaiting review", tone: "review" };
+  }
+
+  if (activity.includes("updating workpad") || recent.includes("updating workpad") || activity.includes("workpad")) {
+    return { label: "Updating workpad", tone: "linear" };
+  }
+
+  if (activity.includes("submitting pull request") || activity.includes("pull request submitted")) {
+    return { label: "Submitting PR", tone: "command" };
+  }
+
+  if (activity.includes("checking pull request status") || activity.includes("pull request check finished")) {
+    return { label: "Reviewing PR", tone: "command" };
+  }
+
+  if (
+    activity.includes("changing task status") ||
+    activity.includes("task status changed") ||
+    activity.includes("updating task in linear") ||
+    activity.includes("changing task status in linear")
+  ) {
+    return { label: "Updating task", tone: "linear" };
+  }
+
+  if (activity.includes("running validation") || activity.includes("validation")) {
+    return { label: "Validating", tone: "command" };
+  }
+
+  if (activity.startsWith("edited ")) {
+    return { label: "Editing code", tone: "command" };
+  }
+
+  if (activity.includes("running command") || activity.includes("command output") || activity.includes("committing changes") || activity.includes("pushing branch updates")) {
+    return { label: "Running commands", tone: "command" };
+  }
+
+  if (activity.includes("reasoning") || activity.includes("thinking")) {
+    return { label: "Thinking", tone: "thinking" };
+  }
+
+  if (activity.includes("planning") || entry.phase === "building_prompt") {
+    return { label: "Planning", tone: "planning" };
+  }
+
+  if (activity.includes("reading linear context") || activity.includes("querying linear") || activity.includes("refreshing issue state")) {
+    return { label: "Syncing task", tone: "linear" };
+  }
+
+  switch (entry.phase) {
+    case "preparing_workspace":
+      return { label: "Preparing workspace", tone: "setup" };
+    case "running_before_run_hook":
+      return { label: "Preflight", tone: "setup" };
+    case "launching_agent_process":
+    case "initializing_session":
+      return { label: "Starting up", tone: "setup" };
+    case "building_prompt":
+      return { label: "Planning", tone: "planning" };
+    case "refreshing_issue_state":
+      return { label: "Syncing task", tone: "linear" };
+    case "finishing":
+      return { label: "Finishing", tone: "setup" };
+    case "streaming_turn":
+      return { label: "Working", tone: "working" };
+    default:
+      if (state.includes("merging")) {
+        return { label: "Merging", tone: "command" };
+      }
+      return { label: humanizePhase(entry.phase), tone: "working" };
+  }
+}
+
+function normalizeLabel(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function isAwaitingHumanReview(state: string): boolean {
+  return normalizeLabel(state) === "human review";
 }
 
 function describeOperatorEvent(event: StatusSnapshot["recent_events"][number]): string {

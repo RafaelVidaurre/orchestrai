@@ -82,7 +82,7 @@ export function buildServiceConfig(
       command:
         typeof codex.command === "string" && codex.command.trim().length > 0 ? codex.command.trim() : DEFAULT_CODEX_COMMAND,
       approvalPolicy: codex.approval_policy ?? DEFAULT_APPROVAL_POLICY,
-      threadSandbox: codex.thread_sandbox ?? "workspace-write",
+      threadSandbox: codex.thread_sandbox ?? "danger-full-access",
       turnSandboxPolicy: codex.turn_sandbox_policy ?? null,
       turnTimeoutMs: coercePositiveInteger(codex.turn_timeout_ms, 3600000),
       readTimeoutMs: coercePositiveInteger(codex.read_timeout_ms, 5000),

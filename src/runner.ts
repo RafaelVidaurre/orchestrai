@@ -166,10 +166,10 @@ export class IssueWorker {
 
 function describeIssueStateAfterTurn(previousState: string, nextState: string, turnCount: number): string {
   if (previousState === nextState) {
-    return `Turn ${turnCount} finished; issue is still ${nextState}`;
+    return `Turn ${turnCount} finished; task is still ${nextState}`;
   }
 
-  return `Turn ${turnCount} finished; issue moved ${previousState} -> ${nextState}`;
+  return `Turn ${turnCount} finished; task status changed ${previousState} -> ${nextState}`;
 }
 
 function buildContinuationPrompt(issue: Issue, turnNumber: number, maxTurns: number): string {

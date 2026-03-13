@@ -586,6 +586,13 @@ export const dashboardStyles = `
     white-space: nowrap;
   }
 
+  .row-title-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
   .agent-row-button {
     appearance: none;
     border: 0;
@@ -606,6 +613,17 @@ export const dashboardStyles = `
 
   .agent-row.selected td {
     background: color-mix(in srgb, var(--accent) 6%, transparent 94%);
+  }
+
+  .agent-row.awaiting-review td {
+    background: color-mix(in srgb, var(--success) 7%, transparent 93%);
+  }
+
+  .agent-row-ticket-cell {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
   }
 
   .agent-row-chevron {
@@ -630,6 +648,24 @@ export const dashboardStyles = `
     gap: 4px;
   }
 
+  .inline-link-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    color: var(--muted-foreground);
+    background: color-mix(in srgb, var(--muted) 55%, transparent 45%);
+    border: 1px solid color-mix(in srgb, var(--border) 72%, transparent 28%);
+    flex-shrink: 0;
+  }
+
+  .inline-link-button:hover {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 28%, var(--border) 72%);
+  }
+
   .phase-badge {
     display: inline-flex;
     align-items: center;
@@ -639,6 +675,33 @@ export const dashboardStyles = `
     color: var(--accent);
     font-size: 0.8rem;
     font-weight: 600;
+  }
+
+  .phase-badge.setup {
+    background: color-mix(in srgb, var(--muted) 85%, transparent 15%);
+    color: var(--muted-foreground);
+  }
+
+  .phase-badge.planning,
+  .phase-badge.thinking {
+    background: color-mix(in srgb, var(--accent) 14%, transparent 86%);
+    color: var(--accent);
+  }
+
+  .phase-badge.command {
+    background: color-mix(in srgb, var(--warning) 14%, transparent 86%);
+    color: var(--warning);
+  }
+
+  .phase-badge.linear {
+    background: color-mix(in srgb, var(--secondary) 76%, transparent 24%);
+    color: var(--foreground);
+  }
+
+  .phase-badge.review {
+    background: color-mix(in srgb, var(--success) 16%, transparent 84%);
+    color: var(--success);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--success) 18%, transparent 82%);
   }
 
   .timeline {
@@ -706,19 +769,15 @@ export const dashboardStyles = `
   }
 
   .agent-detail-row td {
-    padding: 0 8px 16px;
+    padding: 0 8px 14px 34px;
     border-bottom: 1px solid var(--border);
   }
 
   .agent-detail-panel {
-    margin-left: 2px;
-    padding: 18px 18px 16px;
-    border-radius: 22px;
-    border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--border) 84%);
-    background:
-      linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, transparent 95%), transparent 28%),
-      color-mix(in srgb, var(--muted) 42%, transparent 58%);
-    box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent 95%);
+    margin-left: 10px;
+    padding: 16px 0 6px 18px;
+    border-left: 2px solid color-mix(in srgb, var(--accent) 30%, transparent 70%);
+    background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 5%, transparent 95%), transparent 28%);
   }
 
   .agent-detail-header {
@@ -730,7 +789,7 @@ export const dashboardStyles = `
   }
 
   .agent-detail-kicker {
-    margin-bottom: 8px;
+    margin-bottom: 6px;
     font-size: 0.74rem;
     font-weight: 700;
     letter-spacing: 0.1em;
@@ -748,21 +807,56 @@ export const dashboardStyles = `
   .agent-detail-stream {
     max-height: 560px;
     overflow: auto;
-    padding-right: 6px;
+    padding: 4px 8px 0 0;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
   }
 
   .transcript-item {
-    border-radius: 18px;
-    border: 1px solid var(--border);
-    background: color-mix(in srgb, var(--muted) 58%, transparent 42%);
-    padding: 14px 16px;
+    border-radius: 14px;
+    border: 1px solid color-mix(in srgb, var(--border) 72%, transparent 28%);
+    background: color-mix(in srgb, var(--card) 64%, transparent 36%);
+    padding: 12px 14px;
+  }
+
+  .transcript-command-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 2px 0 2px 2px;
+  }
+
+  .transcript-command-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--border) 72%, transparent 28%);
+    background: color-mix(in srgb, var(--muted) 72%, transparent 28%);
+    color: var(--muted-foreground);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, white 5%, transparent 95%);
+  }
+
+  .transcript-command-icon.running {
+    color: var(--warning);
+    background: color-mix(in srgb, var(--warning) 10%, transparent 90%);
+  }
+
+  .transcript-command-icon.done {
+    color: var(--success);
+    background: color-mix(in srgb, var(--success) 11%, transparent 89%);
+  }
+
+  .transcript-command-icon.special {
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent 90%);
   }
 
   .transcript-item.message {
-    background: color-mix(in srgb, var(--card) 85%, transparent 15%);
+    background: color-mix(in srgb, var(--card) 82%, transparent 18%);
   }
 
   .transcript-item.command {
@@ -861,6 +955,15 @@ export const dashboardStyles = `
 
   .detail-value.good {
     color: var(--success);
+  }
+
+  .detail-link.subtle {
+    color: var(--muted-foreground);
+    font-size: 0.86rem;
+  }
+
+  .detail-link.subtle:hover {
+    color: var(--accent);
   }
 
   .detail-value {
@@ -1117,6 +1220,10 @@ export const dashboardStyles = `
 
     .agent-detail-header {
       flex-direction: column;
+    }
+
+    .agent-detail-row td {
+      padding-left: 18px;
     }
   }
 
