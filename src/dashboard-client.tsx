@@ -1,18 +1,31 @@
-import { startTransition, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import {
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type ReactNode,
+  type SetStateAction
+} from "react";
 import { createRoot } from "react-dom/client";
 import * as Dialog from "@radix-ui/react-dialog";
-import * as Tabs from "@radix-ui/react-tabs";
 import {
   Activity,
   ArrowUpRight,
   CheckCircle2,
+  ChevronRight,
   Cog,
+  FolderGit2,
+  Minus,
+  MoonStar,
   PauseCircle,
   PlayCircle,
   Plus,
   RefreshCw,
-  Shield,
-  X
+  Settings2,
+  SunMedium,
+  Trash2
 } from "lucide-react";
 
 import type {
@@ -20,16 +33,18 @@ import type {
   DashboardSetupContext,
   GlobalConfigRecord,
   ManagedProjectRecord,
+  ProjectSetupInput,
   ProjectSetupResult,
-  StatusProjectSummary,
+  ProjectUpdateInput,
   StatusRetryEntry,
   StatusRunningEntry,
   StatusSnapshot
 } from "./domain";
+import { formatElapsedShort } from "./tui-layout";
 
 type ThemePreference = "system" | "light" | "dark";
 type ConnectionState = "connecting" | "live" | "reconnecting" | "failed";
-type SettingsTab = "global" | "project" | "create";
+type SettingsMode = "global" | "project" | "create" | null;
 type StatusNotice = {
   kind: "idle" | "saving" | "success" | "error";
   message: string;
@@ -72,18 +87,19 @@ function DashboardApp() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [connectionState, setConnectionState] = useState<ConnectionState>("connecting");
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => readThemePreference());
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("global");
+  const [settingsMode, setSettingsMode] = useState<SettingsMode>(null);
   const [globalFormState, setGlobalFormState] = useState<GlobalFormState>(() => emptyGlobalForm());
   const [projectFormState, setProjectFormState] = useState<ProjectFormState>(() => emptyProjectForm());
   const [createProjectFormState, setCreateProjectFormState] = useState<ProjectFormState>(() => emptyProjectForm());
-  const [settingsNotice, setSettingsNotice] = useState<StatusNotice>({
-    kind: "idle",
-    message: "System settings live behind the cog. Project creation and overrides live in the settings sheet."
-  });
+  const [notice, setNotice] = useState<StatusNotice>(idleNotice());
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const sourceRef = useRef<EventSource | null>(null);
 
   const effectiveSnapshot = snapshot ?? emptySnapshot();
   const globalConfig = setupContext?.globalConfig ?? emptyGlobalConfig();
+  const summaries = useMemo(() => {
+    return new Map(effectiveSnapshot.projects.map((project) => [project.workflow_path, project] as const));
+  }, [effectiveSnapshot.projects]);
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
     [projects, selectedProjectId]
@@ -92,10 +108,9 @@ function DashboardApp() {
     () => filterSnapshotByProject(effectiveSnapshot, selectedProjectId),
     [effectiveSnapshot, selectedProjectId]
   );
-  const selectedProjectSummary = useMemo(
-    () => selectedSnapshot.projects[0] ?? null,
-    [selectedSnapshot]
-  );
+  const activeAgents = useMemo(() => sortRunningEntries(selectedSnapshot.running), [selectedSnapshot.running]);
+  const queuedRetries = useMemo(() => sortRetryEntries(selectedSnapshot.retries), [selectedSnapshot.retries]);
+  const selectedProjectSummary = selectedProject ? summaries.get(selectedProject.workflowPath) ?? null : null;
 
   useEffect(() => {
     applyThemePreference(themePreference);
@@ -108,63 +123,6 @@ function DashboardApp() {
   }, [setupContext]);
 
   useEffect(() => {
-    void refreshSetupContext(setSetupContext, setGlobalFormState);
-    void refreshProjects(setProjects, setSelectedProjectId);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    let source: EventSource | null = null;
-
-    async function bootstrapSnapshot(): Promise<void> {
-      if (!snapshot) {
-        try {
-          const nextSnapshot = await fetchJson<StatusSnapshot>("/api/snapshot");
-          if (!cancelled) {
-            startTransition(() => {
-              setSnapshot(nextSnapshot);
-              setConnectionState("connecting");
-            });
-          }
-        } catch {
-          if (!cancelled) {
-            setConnectionState("failed");
-          }
-        }
-      }
-
-      source = new EventSource("/api/events");
-      source.onopen = () => {
-        if (!cancelled) {
-          setConnectionState("live");
-        }
-      };
-      source.addEventListener("snapshot", (event) => {
-        if (cancelled) {
-          return;
-        }
-
-        startTransition(() => {
-          setSnapshot(JSON.parse(event.data) as StatusSnapshot);
-          setConnectionState("live");
-        });
-      });
-      source.onerror = () => {
-        if (!cancelled) {
-          setConnectionState("reconnecting");
-        }
-      };
-    }
-
-    void bootstrapSnapshot();
-
-    return () => {
-      cancelled = true;
-      source?.close();
-    };
-  }, [snapshot]);
-
-  useEffect(() => {
     if (!selectedProject) {
       setProjectFormState(emptyProjectForm());
       return;
@@ -173,210 +131,310 @@ function DashboardApp() {
     setProjectFormState(projectToForm(selectedProject));
   }, [selectedProject]);
 
-  const activeAgents = selectedSnapshot.running;
-  const visibleProjects = selectedProject ? projects.filter((project) => project.id === selectedProject.id) : projects;
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    void refreshSetupContext(setSetupContext, setGlobalFormState);
+    void refreshProjects(setProjects, setSelectedProjectId);
+
+    if (!snapshot) {
+      void fetchJson<StatusSnapshot>("/api/snapshot")
+        .then((nextSnapshot) => {
+          if (!active) {
+            return;
+          }
+          startTransition(() => {
+            setSnapshot(nextSnapshot);
+          });
+        })
+        .catch(() => {
+          if (active) {
+            setConnectionState("failed");
+          }
+        });
+    }
+
+    const source = new EventSource("/api/events");
+    sourceRef.current = source;
+    source.onopen = () => {
+      if (!active) {
+        return;
+      }
+
+      setConnectionState("live");
+    };
+    source.addEventListener("snapshot", (event) => {
+      if (!active) {
+        return;
+      }
+
+      startTransition(() => {
+        setSnapshot(JSON.parse(event.data) as StatusSnapshot);
+        setConnectionState("live");
+      });
+    });
+    source.addEventListener("heartbeat", () => {
+      if (active) {
+        setConnectionState((current) => (current === "live" ? current : "live"));
+      }
+    });
+    source.onerror = () => {
+      if (active) {
+        setConnectionState("reconnecting");
+      }
+    };
+
+    return () => {
+      active = false;
+      source.close();
+      if (sourceRef.current === source) {
+        sourceRef.current = null;
+      }
+    };
+  }, []);
+
+  const headerSummary = selectedProject
+    ? buildProjectHeaderSummary(selectedProject, selectedProjectSummary)
+    : `Watching ${effectiveSnapshot.running_count} active agents across ${Math.max(projects.length, effectiveSnapshot.project_count)} projects.`;
 
   return (
-    <div className="app-shell">
-      <aside className="project-rail">
-        <div className="rail-stack">
-          {projects.map((project) => {
-            const selected = project.id === selectedProjectId;
-            return (
-              <button
-                key={project.id}
-                type="button"
-                className={joinClassName(
-                  "project-pill",
-                  selected ? "selected" : null,
-                  project.runtimeRunning ? "running" : "stopped"
-                )}
-                aria-label={`${projectLabel(project)} (${projectRuntimeLabel(project)})`}
-                title={`${projectLabel(project)} (${projectRuntimeLabel(project)})`}
-                onClick={() => {
-                  setSelectedProjectId(project.id);
-                  setSettingsNotice({
-                    kind: "idle",
-                    message: "Operations focus updated. Use the cog to edit global settings or project overrides."
-                  });
-                }}
-              >
-                <span className="project-pill-indicator"></span>
-                <span className="project-pill-face">
-                  {projectInitial(project)}
-                  <span className="project-pill-status" aria-hidden="true"></span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="rail-stack rail-footer">
+    <div className="dashboard-shell">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <div className="brand-lockup">
+            <div className="brand-mark">O</div>
+            <div className="brand-copy">
+              <div className="eyebrow">Operations</div>
+              <div className="brand-title">OrchestrAI</div>
+            </div>
+          </div>
           <button
             type="button"
-            className="project-pill add"
+            className="button secondary icon-only"
             aria-label="Create project"
             title="Create project"
             onClick={() => {
               setCreateProjectFormState(emptyProjectForm());
-              setSettingsTab("create");
-              setSettingsOpen(true);
-              setSettingsNotice({
-                kind: "idle",
-                message: "Create a project with only the repo and slug, then inherit the shared settings you already defined."
-              });
+              setNotice(idleNotice("Create a project, then fine-tune overrides only if you need them."));
+              setSettingsMode("create");
             }}
           >
-            <span className="project-pill-indicator"></span>
-            <span className="project-pill-face">
-              <Plus size={20} />
-            </span>
-          </button>
-          <button
-            type="button"
-            className="project-pill chrome"
-            aria-label="Open settings"
-            title="Open settings"
-            onClick={() => {
-              setSettingsTab(selectedProject ? "project" : "global");
-              setSettingsOpen(true);
-            }}
-          >
-            <span className="project-pill-indicator"></span>
-            <span className="project-pill-face">
-              <Cog size={18} />
-            </span>
+            <Plus size={16} />
           </button>
         </div>
-      </aside>
-      <main className="dashboard-main">
-        <header className="topbar">
-          <div className="topbar-copy">
-            <div className="eyebrow">Operations</div>
-            <h1>{selectedProject ? projectLabel(selectedProject) : "OrchestrAI Control Room"}</h1>
-            <p>
-              {selectedProject
-                ? `${projectRuntimeSentence(selectedProject)} This surface stays focused on live work; settings live behind the cog.`
-                : "Track agents, retries, and project throughput here. Shared defaults and per-project overrides are available in the settings sheet."}
-            </p>
-          </div>
-          <div className="topbar-actions">
-            <div className="badge">
-              <span className="dot"></span>
-              <span>{statusMessage(connectionState, snapshot)}</span>
-            </div>
-            <label className="theme-field">
-              <span>Theme</span>
-              <select
-                aria-label="Theme preference"
-                className="theme-select"
-                value={themePreference}
-                onChange={(event) => {
-                  const nextPreference = event.target.value as ThemePreference;
-                  writeThemePreference(nextPreference);
-                  setThemePreference(nextPreference);
+
+        <div className="sidebar-section">
+          <button
+            type="button"
+            className={joinClassName("project-row", selectedProjectId === null ? "selected" : null)}
+            onClick={() => {
+              setSelectedProjectId(null);
+            }}
+          >
+            <span className="project-avatar all">
+              <Activity size={15} />
+            </span>
+            <span className="project-copy">
+              <span className="project-name">All projects</span>
+              <span className="project-meta">
+                {effectiveSnapshot.running_count} active · {Math.max(projects.length, effectiveSnapshot.project_count)} loaded
+              </span>
+            </span>
+            <ChevronRight size={14} className="project-chevron" />
+          </button>
+
+          <div className="project-list">
+            {projects.map((project) => (
+              <ProjectListItem
+                key={project.id}
+                project={project}
+                summary={summaries.get(project.workflowPath) ?? null}
+                selected={project.id === selectedProjectId}
+                onSelect={() => {
+                  setSelectedProjectId(project.id);
                 }}
-              >
-                <option value="system">System</option>
-                <option value="light">Light</option>
-                <option value="dark">Dark</option>
-              </select>
-            </label>
-            <button
-              type="button"
-              className="ghost-button icon-only"
-              aria-label="Open settings"
-              title="Open settings"
-              onClick={() => {
-                setSettingsTab(selectedProject ? "project" : "global");
-                setSettingsOpen(true);
-              }}
-            >
-              <Cog size={16} />
-            </button>
+              />
+            ))}
+          </div>
+        </div>
+
+        <footer className="sidebar-footer">
+          <button
+            type="button"
+            className="button ghost sidebar-action"
+            onClick={() => {
+              setNotice(idleNotice("Shared keys and default runtime values live here."));
+              setSettingsMode("global");
+            }}
+          >
+            <Cog size={15} />
+            <span>Global settings</span>
+          </button>
+          <div className="sidebar-meta">
+            <div className={joinClassName("connection-line", connectionState)}>
+              <span className="connection-dot" />
+              <span>{connectionLabel(connectionState)}</span>
+            </div>
+            <span className="sidebar-meta-text">Updated {formatSnapshotAge(effectiveSnapshot)}</span>
+          </div>
+          <ThemePicker
+            value={themePreference}
+            onChange={(nextPreference) => {
+              writeThemePreference(nextPreference);
+              setThemePreference(nextPreference);
+            }}
+          />
+        </footer>
+      </aside>
+
+      <main className="page-shell">
+        <header className="page-header">
+          <div className="page-heading">
+            <div className="eyebrow">{selectedProject ? "Project" : "Overview"}</div>
+            <h1>{selectedProject ? projectLabel(selectedProject) : "Operations Overview"}</h1>
+            <p>{headerSummary}</p>
+            <div className="header-links">
+              {selectedProject ? (
+                <>
+                  <MetaChip label={selectedProject.projectSlug} />
+                  {selectedProject.githubRepository ? (
+                    <MetaChip label={selectedProject.githubRepository} icon={<FolderGit2 size={12} />} />
+                  ) : null}
+                  {selectedProjectSummary?.linear_project.url ? (
+                    <a className="meta-chip interactive" href={selectedProjectSummary.linear_project.url} target="_blank" rel="noreferrer">
+                      <span>Linear project</span>
+                      <ArrowUpRight size={12} />
+                    </a>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <MetaChip label={`${effectiveSnapshot.project_count} projects`} />
+                  <MetaChip label={`${effectiveSnapshot.running_count} active agents`} icon={<Activity size={12} />} />
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="header-actions">
             {selectedProject ? (
+              <>
+                <button
+                  type="button"
+                  className={selectedProject.runtimeRunning ? "button secondary" : "button primary"}
+                  onClick={() => {
+                    void toggleProjectRuntime(
+                      selectedProject,
+                      selectedProject.runtimeRunning ? "stop" : "start",
+                      setNotice,
+                      setProjects,
+                      setSelectedProjectId,
+                      setProjectFormState
+                    );
+                  }}
+                >
+                  {selectedProject.runtimeRunning ? <PauseCircle size={16} /> : <PlayCircle size={16} />}
+                  <span>{selectedProject.runtimeRunning ? "Stop project" : "Start project"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="button ghost"
+                  onClick={() => {
+                    setNotice(idleNotice("Project settings only store local overrides."));
+                    setSettingsMode("project");
+                  }}
+                >
+                  <Settings2 size={16} />
+                  <span>Project settings</span>
+                </button>
+              </>
+            ) : (
               <button
                 type="button"
-                className={selectedProject.runtimeRunning ? "danger-button icon-button" : "primary-button icon-button"}
+                className="button ghost"
                 onClick={() => {
-                  void toggleProjectRuntime(
-                    selectedProject,
-                    selectedProject.runtimeRunning ? "stop" : "start",
-                    setSettingsNotice,
-                    setProjects,
-                    setSelectedProjectId,
-                    setProjectFormState
-                  );
+                  setNotice(idleNotice("Shared keys and default runtime values live here."));
+                  setSettingsMode("global");
                 }}
               >
-                {selectedProject.runtimeRunning ? <PauseCircle size={16} /> : <PlayCircle size={16} />}
-                <span>{selectedProject.runtimeRunning ? "Stop Project" : "Start Project"}</span>
+                <Cog size={16} />
+                <span>Global settings</span>
               </button>
-            ) : null}
+            )}
           </div>
         </header>
 
-        <section className="hero-grid">
+        <section className="stat-grid">
           <StatCard
-            label="Active Agents"
+            label="Active agents"
             value={String(activeAgents.length)}
-            hint={selectedProject ? "Filtered to the selected project" : "Across all running projects"}
+            note={selectedProject ? "Selected project" : "All running projects"}
             icon={<Activity size={16} />}
           />
           <StatCard
-            label="Retry Queue"
+            label="Retry queue"
             value={String(selectedSnapshot.retry_count)}
-            hint={selectedProject ? "Selected project backoff queue" : "Projects waiting for another attempt"}
+            note="Waiting for next attempt"
             icon={<RefreshCw size={16} />}
-          />
-          <StatCard
-            label="Total Tokens"
-            value={formatInteger(selectedSnapshot.codex_totals.totalTokens)}
-            hint="Current focused scope"
-            icon={<Shield size={16} />}
           />
           <StatCard
             label="Completed"
             value={String(selectedSnapshot.completed_count)}
-            hint={selectedProject ? "Completed work in the selected project" : "Completed work across loaded projects"}
+            note="Current runtime session"
             icon={<CheckCircle2 size={16} />}
+          />
+          <StatCard
+            label="Tokens"
+            value={formatInteger(selectedSnapshot.codex_totals.totalTokens)}
+            note="Total consumed in focus scope"
+            icon={<Minus size={16} />}
           />
         </section>
 
-        <section className="content-grid">
-          <SectionCard
+        <section className="layout-grid">
+          <Surface
             className="span-two"
-            title="Active Agents"
-            description="Long-running work should be legible at a glance: who is active, how long they have been alive, and the last meaningful thing they reported."
+            title="Active agents"
+            subtitle="Current ticket, runtime, and the latest meaningful progress signal."
           >
-            <AgentTable entries={activeAgents} />
-          </SectionCard>
-          <SectionCard
-            title={selectedProject ? "Project Focus" : "Project Summary"}
-            description={selectedProject ? "Current project status and inherited configuration posture." : "Use the left rail to narrow the view to a single project."}
-          >
-            <FocusPanel project={selectedProject} summary={selectedProjectSummary} globalConfig={globalConfig} />
-          </SectionCard>
-          <SectionCard
-            className="span-two"
-            title="Projects"
-            description="Each card shows runtime state, effective defaults, and the project link."
-          >
-            <ProjectGrid projects={visibleProjects} summaries={selectedSnapshot.projects} />
-          </SectionCard>
-          <SectionCard title="Queued Retries" description="Backoff queue for work that needs another pass.">
-            <RetryList entries={selectedSnapshot.retries} />
-          </SectionCard>
-          <SectionCard className="span-three" title="Recent Events" description="Operator-visible events from the orchestration loop.">
-            <EventList events={selectedSnapshot.recent_events} />
-          </SectionCard>
+            <AgentTable entries={activeAgents} nowMs={nowMs} />
+          </Surface>
+
+          <Surface title="What changed" subtitle="The newest orchestration events, without the raw internals.">
+            <EventTimeline events={selectedSnapshot.recent_events} />
+          </Surface>
+
+          <Surface title="Retry queue" subtitle="Tickets that will be picked up again automatically.">
+            <RetryTable entries={queuedRetries} nowMs={nowMs} />
+          </Surface>
+
+          <Surface title={selectedProject ? "Project details" : "Fleet details"} subtitle="Configuration posture and runtime health.">
+            <ProjectOverview
+              selectedProject={selectedProject}
+              selectedProjectSummary={selectedProjectSummary}
+              snapshot={selectedSnapshot}
+              globalConfig={globalConfig}
+              projectCount={projects.length}
+            />
+          </Surface>
         </section>
       </main>
 
-      <SettingsSheet
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
-        tab={settingsTab}
-        onTabChange={setSettingsTab}
+      <SettingsDialog
+        mode={settingsMode}
+        onClose={() => {
+          setSettingsMode(null);
+        }}
         globalConfig={globalConfig}
         globalFormState={globalFormState}
         setGlobalFormState={setGlobalFormState}
@@ -385,21 +443,47 @@ function DashboardApp() {
         setProjectFormState={setProjectFormState}
         createProjectFormState={createProjectFormState}
         setCreateProjectFormState={setCreateProjectFormState}
-        notice={settingsNotice}
-        setNotice={setSettingsNotice}
+        notice={notice}
+        setNotice={setNotice}
         setProjects={setProjects}
         setSelectedProjectId={setSelectedProjectId}
         setSetupContext={setSetupContext}
+        onComplete={() => {
+          setSettingsMode(null);
+        }}
       />
     </div>
   );
 }
 
-function SettingsSheet(props: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  tab: SettingsTab;
-  onTabChange: (tab: SettingsTab) => void;
+function ProjectListItem(props: {
+  project: ManagedProjectRecord;
+  summary: StatusSnapshot["projects"][number] | null;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const { project, summary, selected, onSelect } = props;
+  const meta = project.runtimeRunning
+    ? `${summary?.running_count ?? 0} active · ${summary?.retry_count ?? 0} queued`
+    : "Stopped";
+
+  return (
+    <button type="button" className={joinClassName("project-row", selected ? "selected" : null)} onClick={onSelect}>
+      <span className={joinClassName("project-avatar", project.runtimeRunning ? "running" : "stopped")}>{projectInitial(project)}</span>
+      <span className="project-copy">
+        <span className="project-name">{projectLabel(project)}</span>
+        <span className="project-meta">{meta}</span>
+      </span>
+      <span className={joinClassName("status-pill", project.runtimeRunning ? "running" : "stopped")}>
+        {project.runtimeRunning ? "Live" : "Off"}
+      </span>
+    </button>
+  );
+}
+
+function SettingsDialog(props: {
+  mode: SettingsMode;
+  onClose: () => void;
   globalConfig: GlobalConfigRecord;
   globalFormState: GlobalFormState;
   setGlobalFormState: Dispatch<SetStateAction<GlobalFormState>>;
@@ -413,12 +497,11 @@ function SettingsSheet(props: {
   setProjects: Dispatch<SetStateAction<ManagedProjectRecord[]>>;
   setSelectedProjectId: Dispatch<SetStateAction<string | null>>;
   setSetupContext: Dispatch<SetStateAction<DashboardSetupContext | null>>;
+  onComplete: () => void;
 }) {
   const {
-    open,
-    onOpenChange,
-    tab,
-    onTabChange,
+    mode,
+    onClose,
     globalConfig,
     globalFormState,
     setGlobalFormState,
@@ -431,193 +514,199 @@ function SettingsSheet(props: {
     setNotice,
     setProjects,
     setSelectedProjectId,
-    setSetupContext
+    setSetupContext,
+    onComplete
   } = props;
 
+  const open = mode !== null;
+
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root open={open} onOpenChange={(nextOpen) => (!nextOpen ? onClose() : undefined)}>
       <Dialog.Portal>
-        <Dialog.Overlay className="sheet-overlay" />
-        <Dialog.Content className="sheet-content">
-          <div className="sheet-header">
+        <Dialog.Overlay className="dialog-overlay" />
+        <Dialog.Content className="dialog-panel">
+          <div className="dialog-header">
             <div>
-              <Dialog.Title className="sheet-title">Settings</Dialog.Title>
-              <Dialog.Description className="sheet-description">
-                Shared defaults and secrets live under global settings. Project tabs only store local overrides.
+              <Dialog.Title className="dialog-title">{settingsTitle(mode, selectedProject)}</Dialog.Title>
+              <Dialog.Description className="dialog-description">
+                {settingsDescription(mode, selectedProject)}
               </Dialog.Description>
             </div>
             <Dialog.Close asChild>
-              <button type="button" className="ghost-button icon-only" aria-label="Close settings">
-                <X size={16} />
+              <button type="button" className="button ghost icon-only" aria-label="Close settings">
+                <Minus size={16} />
               </button>
             </Dialog.Close>
           </div>
 
-          <Tabs.Root value={tab} onValueChange={(value) => onTabChange(value as SettingsTab)}>
-            <Tabs.List className="settings-tabs">
-              <Tabs.Trigger className="settings-tab" value="global">
-                Global
-              </Tabs.Trigger>
-              <Tabs.Trigger className="settings-tab" value="project" disabled={!selectedProject}>
-                Project
-              </Tabs.Trigger>
-              <Tabs.Trigger className="settings-tab" value="create">
-                New Project
-              </Tabs.Trigger>
-            </Tabs.List>
+          {mode === "global" ? (
+            <GlobalSettingsForm
+              globalConfig={globalConfig}
+              formState={globalFormState}
+              setFormState={setGlobalFormState}
+              notice={notice}
+              setNotice={setNotice}
+              setProjects={setProjects}
+              setSelectedProjectId={setSelectedProjectId}
+              setSetupContext={setSetupContext}
+              onComplete={onComplete}
+            />
+          ) : null}
 
-            <Tabs.Content className="settings-panel" value="global">
-              <section className="settings-section">
-                <h2>Global defaults</h2>
-                <p>These values become the shared baseline for new projects and for any project field currently inheriting.</p>
-                <form
-                  className="settings-form"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void saveGlobalSettings({
-                      formState: globalFormState,
-                      setNotice,
-                      setSetupContext,
-                      setGlobalFormState,
-                      setProjects,
-                      setSelectedProjectId
-                    });
-                  }}
-                >
-                  <div className="field-grid">
-                    <Field label="Default polling interval (ms)" help="Used when a project does not override polling.">
-                      <input
-                        value={globalFormState.pollingIntervalMs}
-                        onChange={(event) => {
-                          setGlobalFormState((current) => ({ ...current, pollingIntervalMs: event.target.value }));
-                        }}
-                      />
-                    </Field>
-                    <Field label="Default max concurrent agents" help="Used when a project does not override concurrency.">
-                      <input
-                        value={globalFormState.maxConcurrentAgents}
-                        onChange={(event) => {
-                          setGlobalFormState((current) => ({ ...current, maxConcurrentAgents: event.target.value }));
-                        }}
-                      />
-                    </Field>
-                    <Field
-                      className="full"
-                      label={`Shared Linear API key ${globalConfig.hasLinearApiKey ? "(leave blank to keep current)" : ""}`}
-                      help="Projects can inherit this key instead of storing a local override."
-                    >
-                      <input
-                        type="password"
-                        value={globalFormState.linearApiKey}
-                        placeholder={globalConfig.hasLinearApiKey ? "Keep existing shared Linear key" : "lin_api_..."}
-                        onChange={(event) => {
-                          setGlobalFormState((current) => ({
-                            ...current,
-                            linearApiKey: event.target.value,
-                            clearLinearApiKey: false
-                          }));
-                        }}
-                      />
-                    </Field>
-                    <Field
-                      className="full"
-                      label={`Shared GitHub token ${globalConfig.hasGithubToken ? "(leave blank to keep current)" : "(optional)"}`}
-                      help="Used for private HTTPS clones when a project does not store its own override."
-                    >
-                      <input
-                        type="password"
-                        value={globalFormState.githubToken}
-                        placeholder={globalConfig.hasGithubToken ? "Keep existing shared GitHub token" : "Optional"}
-                        onChange={(event) => {
-                          setGlobalFormState((current) => ({
-                            ...current,
-                            githubToken: event.target.value,
-                            clearGithubToken: false
-                          }));
-                        }}
-                      />
-                    </Field>
-                  </div>
-                  <div className="toggle-stack">
-                    {globalConfig.hasLinearApiKey ? (
-                      <ToggleRow
-                        checked={globalFormState.clearLinearApiKey}
-                        label="Clear shared Linear API key"
-                        onCheckedChange={(checked) => {
-                          setGlobalFormState((current) => ({
-                            ...current,
-                            clearLinearApiKey: checked,
-                            linearApiKey: checked ? "" : current.linearApiKey
-                          }));
-                        }}
-                      />
-                    ) : null}
-                    {globalConfig.hasGithubToken ? (
-                      <ToggleRow
-                        checked={globalFormState.clearGithubToken}
-                        label="Clear shared GitHub token"
-                        onCheckedChange={(checked) => {
-                          setGlobalFormState((current) => ({
-                            ...current,
-                            clearGithubToken: checked,
-                            githubToken: checked ? "" : current.githubToken
-                          }));
-                        }}
-                      />
-                    ) : null}
-                  </div>
-                  <FormFooter notice={notice}>
-                    <button className="primary-button" type="submit" disabled={notice.kind === "saving"}>
-                      Save Global Settings
-                    </button>
-                  </FormFooter>
-                </form>
-              </section>
-            </Tabs.Content>
+          {mode === "project" && selectedProject ? (
+            <ProjectSettingsForm
+              mode="update"
+              formState={projectFormState}
+              setFormState={setProjectFormState}
+              selectedProject={selectedProject}
+              globalConfig={globalConfig}
+              notice={notice}
+              setNotice={setNotice}
+              setProjects={setProjects}
+              setSelectedProjectId={setSelectedProjectId}
+              onComplete={onComplete}
+            />
+          ) : null}
 
-            <Tabs.Content className="settings-panel" value="project">
-              {selectedProject ? (
-                <section className="settings-section">
-                  <h2>{projectLabel(selectedProject)}</h2>
-                  <p>Project fields only store local overrides. Turn an override off to fall back to the shared global value.</p>
-                  <ProjectSettingsForm
-                    mode="update"
-                    formState={projectFormState}
-                    setFormState={setProjectFormState}
-                    selectedProject={selectedProject}
-                    globalConfig={globalConfig}
-                    notice={notice}
-                    setNotice={setNotice}
-                    setProjects={setProjects}
-                    setSelectedProjectId={setSelectedProjectId}
-                  />
-                </section>
-              ) : (
-                <EmptyPanel message="Select a project from the left rail to edit project-specific overrides." />
-              )}
-            </Tabs.Content>
-
-            <Tabs.Content className="settings-panel" value="create">
-              <section className="settings-section">
-                <h2>Create Project</h2>
-                <p>Only the slug and GitHub repository are strictly required here when you already have a shared Linear key in global settings.</p>
-                <ProjectSettingsForm
-                  mode="create"
-                  formState={createProjectFormState}
-                  setFormState={setCreateProjectFormState}
-                  selectedProject={null}
-                  globalConfig={globalConfig}
-                  notice={notice}
-                  setNotice={setNotice}
-                  setProjects={setProjects}
-                  setSelectedProjectId={setSelectedProjectId}
-                />
-              </section>
-            </Tabs.Content>
-          </Tabs.Root>
+          {mode === "create" ? (
+            <ProjectSettingsForm
+              mode="create"
+              formState={createProjectFormState}
+              setFormState={setCreateProjectFormState}
+              selectedProject={null}
+              globalConfig={globalConfig}
+              notice={notice}
+              setNotice={setNotice}
+              setProjects={setProjects}
+              setSelectedProjectId={setSelectedProjectId}
+              onComplete={onComplete}
+            />
+          ) : null}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  );
+}
+
+function GlobalSettingsForm(props: {
+  globalConfig: GlobalConfigRecord;
+  formState: GlobalFormState;
+  setFormState: Dispatch<SetStateAction<GlobalFormState>>;
+  notice: StatusNotice;
+  setNotice: Dispatch<SetStateAction<StatusNotice>>;
+  setProjects: Dispatch<SetStateAction<ManagedProjectRecord[]>>;
+  setSelectedProjectId: Dispatch<SetStateAction<string | null>>;
+  setSetupContext: Dispatch<SetStateAction<DashboardSetupContext | null>>;
+  onComplete: () => void;
+}) {
+  const { globalConfig, formState, setFormState, notice, setNotice, setProjects, setSelectedProjectId, setSetupContext, onComplete } =
+    props;
+
+  return (
+    <form
+      className="form-stack"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void saveGlobalSettings({
+          formState,
+          setNotice,
+          setSetupContext,
+          setGlobalFormState: setFormState,
+          setProjects,
+          setSelectedProjectId
+        }).then((saved) => {
+          if (saved) {
+            onComplete();
+          }
+        });
+      }}
+    >
+      <div className="field-grid two-up">
+        <Field label="Default polling interval">
+          <input
+            className="input"
+            value={formState.pollingIntervalMs}
+            onChange={(event) => {
+              setFormState((current) => ({ ...current, pollingIntervalMs: event.target.value }));
+            }}
+          />
+        </Field>
+        <Field label="Default concurrent agents">
+          <input
+            className="input"
+            value={formState.maxConcurrentAgents}
+            onChange={(event) => {
+              setFormState((current) => ({ ...current, maxConcurrentAgents: event.target.value }));
+            }}
+          />
+        </Field>
+        <Field label={`Shared Linear API key${globalConfig.hasLinearApiKey ? " (leave blank to keep)" : ""}`} className="full">
+          <input
+            className="input"
+            type="password"
+            value={formState.linearApiKey}
+            placeholder={globalConfig.hasLinearApiKey ? "Keep existing key" : "lin_api_..."}
+            onChange={(event) => {
+              setFormState((current) => ({
+                ...current,
+                linearApiKey: event.target.value,
+                clearLinearApiKey: false
+              }));
+            }}
+          />
+        </Field>
+        <Field label={`Shared GitHub token${globalConfig.hasGithubToken ? " (leave blank to keep)" : ""}`} className="full">
+          <input
+            className="input"
+            type="password"
+            value={formState.githubToken}
+            placeholder={globalConfig.hasGithubToken ? "Keep existing token" : "Optional"}
+            onChange={(event) => {
+              setFormState((current) => ({
+                ...current,
+                githubToken: event.target.value,
+                clearGithubToken: false
+              }));
+            }}
+          />
+        </Field>
+      </div>
+
+      <div className="toggle-list">
+        {globalConfig.hasLinearApiKey ? (
+          <ToggleRow
+            checked={formState.clearLinearApiKey}
+            label="Clear shared Linear API key"
+            onCheckedChange={(checked) => {
+              setFormState((current) => ({
+                ...current,
+                clearLinearApiKey: checked,
+                linearApiKey: checked ? "" : current.linearApiKey
+              }));
+            }}
+          />
+        ) : null}
+        {globalConfig.hasGithubToken ? (
+          <ToggleRow
+            checked={formState.clearGithubToken}
+            label="Clear shared GitHub token"
+            onCheckedChange={(checked) => {
+              setFormState((current) => ({
+                ...current,
+                clearGithubToken: checked,
+                githubToken: checked ? "" : current.githubToken
+              }));
+            }}
+          />
+        ) : null}
+      </div>
+
+      <DialogFooter notice={notice}>
+        <button className="button primary" type="submit" disabled={notice.kind === "saving"}>
+          Save global settings
+        </button>
+      </DialogFooter>
+    </form>
   );
 }
 
@@ -631,13 +720,14 @@ function ProjectSettingsForm(props: {
   setNotice: Dispatch<SetStateAction<StatusNotice>>;
   setProjects: Dispatch<SetStateAction<ManagedProjectRecord[]>>;
   setSelectedProjectId: Dispatch<SetStateAction<string | null>>;
+  onComplete: () => void;
 }) {
-  const { mode, formState, setFormState, selectedProject, globalConfig, notice, setNotice, setProjects, setSelectedProjectId } = props;
-  const actionLabel = mode === "create" ? "Create Project" : "Save Project";
+  const { mode, formState, setFormState, selectedProject, globalConfig, notice, setNotice, setProjects, setSelectedProjectId, onComplete } =
+    props;
 
   return (
     <form
-      className="settings-form"
+      className="form-stack"
       onSubmit={(event) => {
         event.preventDefault();
         void saveProject({
@@ -647,12 +737,17 @@ function ProjectSettingsForm(props: {
           setNotice,
           setProjects,
           setSelectedProjectId
+        }).then((saved) => {
+          if (saved) {
+            onComplete();
+          }
         });
       }}
     >
-      <div className="field-grid">
-        <Field label="Project name" help="Human-readable display name used across the dashboard and TUI.">
+      <div className="field-grid two-up">
+        <Field label="Project name">
           <input
+            className="input"
             value={formState.displayName}
             placeholder="Optional display name"
             onChange={(event) => {
@@ -660,8 +755,9 @@ function ProjectSettingsForm(props: {
             }}
           />
         </Field>
-        <Field label="Linear project slug" help="This is the only project-specific Linear identifier required.">
+        <Field label="Linear project slug">
           <input
+            className="input"
             value={formState.projectSlug}
             placeholder="project-abc123"
             onChange={(event) => {
@@ -669,8 +765,9 @@ function ProjectSettingsForm(props: {
             }}
           />
         </Field>
-        <Field className="full" label="GitHub repository" help="Use owner/repo or a GitHub URL.">
+        <Field label="GitHub repository" className="full">
           <input
+            className="input"
             value={formState.githubRepository}
             placeholder="owner/repo"
             onChange={(event) => {
@@ -678,17 +775,13 @@ function ProjectSettingsForm(props: {
             }}
           />
         </Field>
-
-        <Field
-          className="full"
-          label={`Linear API key ${selectedProject?.hasLinearApiKey ? "(leave blank to keep local override)" : ""}`}
-          help={formState.useGlobalLinearApiKey ? "This project inherits the shared Linear key." : "Set a project-local override or keep the current local value."}
-        >
+        <Field label="Linear API key" className="full">
           <input
+            className="input"
             type="password"
             value={formState.linearApiKey}
-            placeholder={formState.useGlobalLinearApiKey ? "Using shared Linear API key" : "Optional local override"}
             disabled={formState.useGlobalLinearApiKey}
+            placeholder={formState.useGlobalLinearApiKey ? "Using shared key" : "Optional project override"}
             onChange={(event) => {
               setFormState((current) => ({ ...current, linearApiKey: event.target.value }));
             }}
@@ -703,17 +796,13 @@ function ProjectSettingsForm(props: {
             }}
           />
         ) : null}
-
-        <Field
-          className="full"
-          label={`GitHub token ${selectedProject?.hasGithubToken ? "(leave blank to keep local override)" : "(optional)"}`}
-          help={formState.useGlobalGithubToken ? "This project inherits the shared GitHub token." : "Set a project-local override when this repo needs private HTTPS clone auth."}
-        >
+        <Field label="GitHub token" className="full">
           <input
+            className="input"
             type="password"
             value={formState.githubToken}
-            placeholder={formState.useGlobalGithubToken ? "Using shared GitHub token" : "Optional local override"}
             disabled={formState.useGlobalGithubToken}
+            placeholder={formState.useGlobalGithubToken ? "Using shared token" : "Optional project override"}
             onChange={(event) => {
               setFormState((current) => ({ ...current, githubToken: event.target.value }));
             }}
@@ -728,12 +817,9 @@ function ProjectSettingsForm(props: {
             }}
           />
         ) : null}
-
-        <Field
-          label="Polling interval (ms)"
-          help={formState.useGlobalPollingIntervalMs ? `Using shared default (${globalConfig.defaults.pollingIntervalMs}ms)` : "Project-local override"}
-        >
+        <Field label="Polling interval">
           <input
+            className="input"
             value={formState.pollingIntervalMs}
             disabled={formState.useGlobalPollingIntervalMs}
             placeholder={String(globalConfig.defaults.pollingIntervalMs)}
@@ -742,11 +828,9 @@ function ProjectSettingsForm(props: {
             }}
           />
         </Field>
-        <Field
-          label="Max concurrent agents"
-          help={formState.useGlobalMaxConcurrentAgents ? `Using shared default (${globalConfig.defaults.maxConcurrentAgents})` : "Project-local override"}
-        >
+        <Field label="Concurrent agents">
           <input
+            className="input"
             value={formState.maxConcurrentAgents}
             disabled={formState.useGlobalMaxConcurrentAgents}
             placeholder={String(globalConfig.defaults.maxConcurrentAgents)}
@@ -755,7 +839,9 @@ function ProjectSettingsForm(props: {
             }}
           />
         </Field>
+      </div>
 
+      <div className="toggle-list">
         <ToggleRow
           checked={formState.useGlobalPollingIntervalMs}
           label="Use shared polling interval"
@@ -765,124 +851,157 @@ function ProjectSettingsForm(props: {
         />
         <ToggleRow
           checked={formState.useGlobalMaxConcurrentAgents}
-          label="Use shared max concurrency"
+          label="Use shared concurrent-agent limit"
           onCheckedChange={(checked) => {
             setFormState((current) => ({ ...current, useGlobalMaxConcurrentAgents: checked }));
           }}
         />
       </div>
 
-      <FormFooter notice={notice}>
-        <button className="primary-button" type="submit" disabled={notice.kind === "saving"}>
-          {actionLabel}
-        </button>
+      <DialogFooter notice={notice}>
         {mode === "update" && selectedProject ? (
-          <>
-            <button
-              className={selectedProject.runtimeRunning ? "danger-button" : "secondary-button"}
-              type="button"
-              disabled={notice.kind === "saving"}
-              onClick={() => {
-                void toggleProjectRuntime(
-                  selectedProject,
-                  selectedProject.runtimeRunning ? "stop" : "start",
-                  setNotice,
-                  setProjects,
-                  setSelectedProjectId
-                );
-              }}
-            >
-              {selectedProject.runtimeRunning ? "Stop Project" : "Start Project"}
-            </button>
-            <button
-              className="danger-button"
-              type="button"
-              disabled={notice.kind === "saving"}
-              onClick={() => {
-                void deleteProject(selectedProject, setNotice, setProjects, setSelectedProjectId);
-              }}
-            >
-              Remove Project
-            </button>
-          </>
+          <button
+            type="button"
+            className="button danger"
+            onClick={() => {
+              void removeProject(selectedProject, setNotice, setProjects, setSelectedProjectId).then((removed) => {
+                if (removed) {
+                  onComplete();
+                }
+              });
+            }}
+          >
+            <Trash2 size={15} />
+            <span>Remove project</span>
+          </button>
         ) : null}
-      </FormFooter>
+        <button className="button primary" type="submit" disabled={notice.kind === "saving"}>
+          {mode === "create" ? "Create project" : "Save project"}
+        </button>
+      </DialogFooter>
     </form>
   );
 }
 
-function StatCard(props: { label: string; value: string; hint: string; icon: ReactNode }) {
+function StatCard(props: { label: string; value: string; note: string; icon: ReactNode }) {
   return (
     <article className="stat-card">
-      <div className="stat-head">
-        <span>{props.label}</span>
+      <div className="stat-top">
+        <span className="stat-label">{props.label}</span>
         <span className="stat-icon">{props.icon}</span>
       </div>
       <div className="stat-value">{props.value}</div>
-      <p>{props.hint}</p>
+      <div className="stat-note">{props.note}</div>
     </article>
   );
 }
 
-function SectionCard(props: {
-  title: string;
-  description: string;
-  className?: string;
-  children: ReactNode;
-}) {
+function Surface(props: { title: string; subtitle: string; className?: string; children: ReactNode }) {
   return (
-    <section className={joinClassName("section-card", props.className)}>
-      <div className="section-head">
+    <section className={joinClassName("surface", props.className ?? null)}>
+      <div className="surface-header">
         <div>
           <h2>{props.title}</h2>
-          <p>{props.description}</p>
+          <p>{props.subtitle}</p>
         </div>
       </div>
-      {props.children}
+      <div className="surface-body">{props.children}</div>
     </section>
   );
 }
 
-function AgentTable(props: { entries: StatusRunningEntry[] }) {
+function AgentTable(props: { entries: StatusRunningEntry[]; nowMs: number }) {
   if (props.entries.length === 0) {
-    return <EmptyPanel message="No active agents right now." />;
+    return <EmptyState title="No active agents" body="When a ticket is picked up, it will appear here with its runtime and latest progress signal." />;
   }
 
   return (
-    <div className="table-wrap">
-      <table className="shad-table">
+    <div className="table-shell">
+      <table className="data-table agents-table">
         <thead>
           <tr>
-            <th>Agent</th>
-            <th>Project</th>
-            <th>State</th>
-            <th>Runtime</th>
+            <th>Ticket</th>
+            <th>Phase</th>
+            <th>Running</th>
             <th>Tokens</th>
-            <th>Activity</th>
+            <th>What it’s doing</th>
           </tr>
         </thead>
         <tbody>
-          {props.entries.map((entry) => (
-            <tr key={`${entry.workflow_path}:${entry.issue_id}`}>
+          {props.entries.map((entry) => {
+            const secondary = entry.recent_activity[1]?.message ?? `${entry.turn_count} turns completed`;
+            return (
+              <tr key={entry.issue_id}>
+                <td>
+                  <div className="row-title">{entry.identifier}</div>
+                  <div className="row-subtitle">{entry.title}</div>
+                </td>
+                <td>
+                  <span className="phase-badge">{humanizePhase(entry.phase)}</span>
+                  <div className="row-subtitle">{entry.state}</div>
+                </td>
+                <td className="mono">{formatElapsedShort(props.nowMs - entry.started_at_ms)}</td>
+                <td className="mono">{formatInteger(entry.codex_total_tokens)}</td>
+                <td>
+                  <div className="activity-primary">{entry.activity}</div>
+                  <div className="activity-secondary">{secondary}</div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function EventTimeline(props: { events: StatusSnapshot["recent_events"] }) {
+  if (props.events.length === 0) {
+    return <EmptyState title="No recent events" body="This feed fills in as the runtime dispatches work, retries tickets, and advances agent phases." />;
+  }
+
+  return (
+    <div className="timeline">
+      {props.events.slice(0, 12).map((event, index) => (
+        <div className="timeline-item" key={`${event.timestamp}:${event.message}:${index}`}>
+          <div className="timeline-meta">
+            <span className="timeline-time">{formatRelativeTime(event.timestamp)}</span>
+            <span className={joinClassName("event-level", event.level)}>{event.level}</span>
+          </div>
+          <div className="timeline-copy">
+            <div className="row-title">{event.issueIdentifier ?? "runtime"}</div>
+            <div className="row-subtitle">{describeOperatorEvent(event)}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function RetryTable(props: { entries: StatusRetryEntry[]; nowMs: number }) {
+  if (props.entries.length === 0) {
+    return <EmptyState title="Queue is clear" body="Nothing is waiting in backoff right now." />;
+  }
+
+  return (
+    <div className="table-shell">
+      <table className="data-table retry-table">
+        <thead>
+          <tr>
+            <th>Ticket</th>
+            <th>Due</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.entries.slice(0, 8).map((entry) => (
+            <tr key={entry.issue_id}>
               <td>
-                <div className="table-primary">
-                  {entry.issue_url ? (
-                    <a href={entry.issue_url} target="_blank" rel="noreferrer">
-                      {entry.identifier}
-                    </a>
-                  ) : (
-                    entry.identifier
-                  )}
-                </div>
-                <div className="table-secondary">{entry.title}</div>
+                <div className="row-title">{entry.identifier}</div>
+                <div className="row-subtitle">{entry.title}</div>
               </td>
-              <td>{entry.project_name ?? entry.project_slug}</td>
-              <td>
-                <span className="inline-chip">{entry.state}</span>
-              </td>
-              <td>{formatDurationFromMs(Date.now() - entry.started_at_ms)}</td>
-              <td>{formatInteger(entry.codex_total_tokens)}</td>
-              <td>{shortActivity(entry.activity)}</td>
+              <td className="mono">{formatElapsedShort(Math.max(0, entry.due_at_ms - props.nowMs))}</td>
+              <td className="row-subtitle">{entry.error ?? "Continuation run"}</td>
             </tr>
           ))}
         </tbody>
@@ -891,178 +1010,92 @@ function AgentTable(props: { entries: StatusRunningEntry[] }) {
   );
 }
 
-function RetryList(props: { entries: StatusRetryEntry[] }) {
-  if (props.entries.length === 0) {
-    return <EmptyPanel message="No queued retries." />;
-  }
-
-  return (
-    <div className="stack-list">
-      {props.entries.slice(0, 8).map((entry) => (
-        <article className="stack-item" key={`${entry.workflow_path}:${entry.issue_id}`}>
-          <div className="stack-item-head">
-            <strong>{entry.identifier}</strong>
-            <span>{entry.project_name ?? entry.project_slug}</span>
-          </div>
-          <div className="table-secondary">{entry.title}</div>
-          <div className="stack-meta">attempt {entry.attempt} • due {formatRelativeTime(entry.due_at_ms)}</div>
-          <div className="stack-meta">{entry.error ?? "Waiting for next retry window"}</div>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function EventList(props: { events: StatusSnapshot["recent_events"] }) {
-  if (props.events.length === 0) {
-    return <EmptyPanel message="No orchestration events yet." />;
-  }
-
-  return (
-    <div className="stack-list">
-      {props.events.slice(0, 10).map((event, index) => (
-        <article className="stack-item" key={`${event.timestamp}:${index}`}>
-          <div className="stack-item-head">
-            <strong>{event.message}</strong>
-            <span>{new Date(event.timestamp).toLocaleTimeString()}</span>
-          </div>
-          <div className="stack-meta">
-            {event.level.toUpperCase()}
-            {event.issueIdentifier ? ` • ${event.issueIdentifier}` : ""}
-          </div>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function ProjectGrid(props: { projects: ManagedProjectRecord[]; summaries: StatusProjectSummary[] }) {
-  if (props.projects.length === 0) {
-    return <EmptyPanel message="No configured projects yet. Use the plus button in the rail to add one." />;
-  }
-
-  const summaryById = new Map(props.summaries.map((summary) => [summary.workflow_path, summary]));
-  return (
-    <div className="project-grid">
-      {props.projects.map((project) => {
-        const summary = summaryById.get(project.id);
-        return (
-          <article className="project-summary-card" key={project.id}>
-            <div className="project-card-head">
-              <div>
-                <h3>{projectLabel(project)}</h3>
-                <p>{project.githubRepository ?? "No repository configured"}</p>
-              </div>
-              <span className={project.runtimeRunning ? "status-pill live" : "status-pill idle"}>
-                {project.runtimeRunning ? "Running" : "Stopped"}
-              </span>
-            </div>
-            <div className="summary-facts">
-              <SummaryFact label="Linear slug" value={project.projectSlug} />
-              <SummaryFact
-                label="Defaults"
-                value={`${project.usesGlobalPollingIntervalMs ? "global" : `${project.pollingIntervalMs}ms`} / ${
-                  project.usesGlobalMaxConcurrentAgents ? "global" : project.maxConcurrentAgents
-                }`}
-              />
-              <SummaryFact label="Agents" value={summary ? String(summary.running_count) : "0"} />
-              <SummaryFact label="Queued" value={summary ? String(summary.retry_count) : "0"} />
-            </div>
-            {summary?.linear_project.url ? (
-              <a className="inline-link" href={summary.linear_project.url} target="_blank" rel="noreferrer">
-                Open Linear project
-                <ArrowUpRight size={14} />
-              </a>
-            ) : null}
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function FocusPanel(props: {
-  project: ManagedProjectRecord | null;
-  summary: StatusProjectSummary | null;
+function ProjectOverview(props: {
+  selectedProject: ManagedProjectRecord | null;
+  selectedProjectSummary: StatusSnapshot["projects"][number] | null;
+  snapshot: StatusSnapshot;
   globalConfig: GlobalConfigRecord;
+  projectCount: number;
 }) {
-  if (!props.project) {
+  const { selectedProject, selectedProjectSummary, snapshot, globalConfig, projectCount } = props;
+
+  if (!selectedProject) {
     return (
-      <div className="stack-list">
-        <article className="stack-item">
-          <div className="stack-item-head">
-            <strong>Global defaults</strong>
-            <span>{props.globalConfig.defaults.pollingIntervalMs}ms / {props.globalConfig.defaults.maxConcurrentAgents}</span>
-          </div>
-          <div className="stack-meta">
-            Shared Linear key {props.globalConfig.hasLinearApiKey ? "present" : "missing"} • Shared GitHub token{" "}
-            {props.globalConfig.hasGithubToken ? "present" : "missing"}
-          </div>
-        </article>
-        <article className="stack-item">
-          <div className="stack-item-head">
-            <strong>Select a project</strong>
-          </div>
-          <div className="stack-meta">The rail keeps the main canvas focused. Settings stay out of the way until you need them.</div>
-        </article>
+      <div className="detail-grid">
+        <DetailItem label="Projects loaded" value={String(projectCount)} />
+        <DetailItem label="Active agents" value={String(snapshot.running_count)} />
+        <DetailItem label="Shared polling" value={`${globalConfig.defaults.pollingIntervalMs} ms`} />
+        <DetailItem label="Shared concurrency" value={String(globalConfig.defaults.maxConcurrentAgents)} />
       </div>
     );
   }
 
   return (
-    <div className="stack-list">
-      <article className="stack-item">
-        <div className="stack-item-head">
-          <strong>{projectLabel(props.project)}</strong>
-          <span>{projectRuntimeLabel(props.project)}</span>
-        </div>
-        <div className="stack-meta">
-          {props.project.usesGlobalLinearApiKey ? "Shared Linear key" : "Local Linear override"} •{" "}
-          {props.project.usesGlobalGithubToken ? "Shared GitHub token" : "Local GitHub override"}
-        </div>
-      </article>
-      <article className="stack-item">
-        <div className="stack-item-head">
-          <strong>Effective defaults</strong>
-          <span>
-            {props.project.pollingIntervalMs}ms / {props.project.maxConcurrentAgents}
-          </span>
-        </div>
-        <div className="stack-meta">
-          Polling {props.project.usesGlobalPollingIntervalMs ? "inherits global default" : "overridden locally"} • Concurrency{" "}
-          {props.project.usesGlobalMaxConcurrentAgents ? "inherits global default" : "overridden locally"}
-        </div>
-      </article>
-      <article className="stack-item">
-        <div className="stack-item-head">
-          <strong>Live state</strong>
-          <span>{props.summary ? `${props.summary.running_count} agents` : "Stopped"}</span>
-        </div>
-        <div className="stack-meta">
-          {props.summary
-            ? `${props.summary.retry_count} queued retries • ${formatInteger(props.summary.codex_totals.totalTokens)} total tokens`
-            : "No live snapshot for this project right now"}
-        </div>
-      </article>
+    <div className="detail-grid">
+      <DetailItem label="Runtime" value={selectedProject.runtimeRunning ? "Running" : "Stopped"} tone={selectedProject.runtimeRunning ? "good" : "muted"} />
+      <DetailItem label="Linear slug" value={selectedProject.projectSlug} />
+      <DetailItem
+        label="Repository"
+        value={selectedProject.githubRepository ?? "Not set"}
+        suffix={
+          selectedProjectSummary?.linear_project.url ? (
+            <a href={selectedProjectSummary.linear_project.url} target="_blank" rel="noreferrer" className="detail-link">
+              Open Linear
+            </a>
+          ) : null
+        }
+      />
+      <DetailItem
+        label="Linear key"
+        value={selectedProject.usesGlobalLinearApiKey ? "Inherited" : selectedProject.hasLinearApiKey ? "Project override" : "Missing"}
+      />
+      <DetailItem
+        label="GitHub token"
+        value={selectedProject.usesGlobalGithubToken ? "Inherited" : selectedProject.hasGithubToken ? "Project override" : "Optional"}
+      />
+      <DetailItem
+        label="Polling"
+        value={`${selectedProject.pollingIntervalMs} ms`}
+        note={selectedProject.usesGlobalPollingIntervalMs ? "Shared default" : "Project override"}
+      />
+      <DetailItem
+        label="Concurrent agents"
+        value={String(selectedProject.maxConcurrentAgents)}
+        note={selectedProject.usesGlobalMaxConcurrentAgents ? "Shared default" : "Project override"}
+      />
+      <DetailItem
+        label="Rate limits"
+        value={renderRateLimitSummary(selectedProjectSummary)}
+      />
     </div>
   );
 }
 
-function SummaryFact(props: { label: string; value: string }) {
+function DetailItem(props: { label: string; value: string; note?: string; tone?: "good" | "muted"; suffix?: ReactNode }) {
   return (
-    <div className="summary-fact">
-      <span>{props.label}</span>
-      <strong>{props.value}</strong>
+    <div className="detail-item">
+      <div className="detail-label">{props.label}</div>
+      <div className={joinClassName("detail-value", props.tone === "good" ? "good" : null)}>{props.value}</div>
+      {props.note ? <div className="detail-note">{props.note}</div> : null}
+      {props.suffix ? <div className="detail-suffix">{props.suffix}</div> : null}
     </div>
   );
 }
 
-function Field(props: { label: string; help: string; className?: string; children: ReactNode }) {
+function EmptyState(props: { title: string; body: string }) {
   return (
-    <label className={joinClassName("field", props.className)}>
-      <span>{props.label}</span>
+    <div className="empty-state">
+      <div className="row-title">{props.title}</div>
+      <div className="row-subtitle">{props.body}</div>
+    </div>
+  );
+}
+
+function Field(props: { label: string; className?: string; children: ReactNode }) {
+  return (
+    <label className={joinClassName("field", props.className ?? null)}>
+      <span className="field-label">{props.label}</span>
       {props.children}
-      <small>{props.help}</small>
     </label>
   );
 }
@@ -1070,38 +1103,163 @@ function Field(props: { label: string; help: string; className?: string; childre
 function ToggleRow(props: { checked: boolean; label: string; onCheckedChange: (checked: boolean) => void }) {
   return (
     <label className="toggle-row">
+      <span>{props.label}</span>
       <input
+        className="toggle-input"
         type="checkbox"
         checked={props.checked}
         onChange={(event) => {
           props.onCheckedChange(event.target.checked);
         }}
       />
-      <span>{props.label}</span>
     </label>
   );
 }
 
-function FormFooter(props: { notice: StatusNotice; children: React.ReactNode }) {
+function DialogFooter(props: { notice: StatusNotice; children: ReactNode }) {
   return (
-    <div className="form-footer">
-      <div className={joinClassName("notice", props.notice.kind === "error" ? "error" : null)}>{props.notice.message}</div>
-      <div className="button-row">{props.children}</div>
+    <div className="dialog-footer">
+      <div className={joinClassName("notice", props.notice.kind)}>{props.notice.message}</div>
+      <div className="dialog-actions">{props.children}</div>
     </div>
   );
 }
 
-function EmptyPanel(props: { message: string }) {
-  return <div className="empty-panel">{props.message}</div>;
+function MetaChip(props: { label: string; icon?: ReactNode }) {
+  return (
+    <span className="meta-chip">
+      {props.icon}
+      <span>{props.label}</span>
+    </span>
+  );
+}
+
+function ThemePicker(props: { value: ThemePreference; onChange: (value: ThemePreference) => void }) {
+  return (
+    <label className="theme-picker">
+      <span className="theme-label">
+        {props.value === "dark" ? <MoonStar size={14} /> : <SunMedium size={14} />}
+        <span>Theme</span>
+      </span>
+      <select
+        className="select"
+        value={props.value}
+        aria-label="Theme preference"
+        onChange={(event) => {
+          props.onChange(event.target.value as ThemePreference);
+        }}
+      >
+        <option value="system">System</option>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label>
+  );
+}
+
+function settingsTitle(mode: SettingsMode, selectedProject: ManagedProjectRecord | null): string {
+  switch (mode) {
+    case "global":
+      return "Global settings";
+    case "project":
+      return selectedProject ? `Edit ${projectLabel(selectedProject)}` : "Project settings";
+    case "create":
+      return "Create project";
+    default:
+      return "Settings";
+  }
+}
+
+function settingsDescription(mode: SettingsMode, selectedProject: ManagedProjectRecord | null): string {
+  switch (mode) {
+    case "global":
+      return "Shared API keys and default runtime values.";
+    case "project":
+      return selectedProject
+        ? "Only local overrides live here. Anything turned off inherits the shared global default."
+        : "Select a project first.";
+    case "create":
+      return "Start with the slug and repository, then override only what this project truly needs.";
+    default:
+      return "";
+  }
+}
+
+function buildProjectHeaderSummary(
+  project: ManagedProjectRecord,
+  summary: StatusSnapshot["projects"][number] | null
+): string {
+  if (!project.runtimeRunning) {
+    return "This project is configured but currently stopped.";
+  }
+
+  return `${summary?.running_count ?? 0} active agents · ${summary?.retry_count ?? 0} queued retries · ${formatInteger(summary?.codex_totals.totalTokens ?? 0)} total tokens`;
+}
+
+function renderRateLimitSummary(summary: StatusSnapshot["projects"][number] | null): string {
+  const limits = summary?.linear_rate_limits;
+  if (!limits) {
+    return "Unavailable";
+  }
+
+  const requests = limits.requests;
+  if (!requests) {
+    return "Observed, no request window";
+  }
+
+  return `${requests.remaining ?? "n/a"}/${requests.limit ?? "n/a"} remaining`;
+}
+
+function humanizePhase(phase: string): string {
+  switch (phase) {
+    case "preparing_workspace":
+      return "Preparing workspace";
+    case "running_before_run_hook":
+      return "Preflight";
+    case "launching_agent_process":
+      return "Launching agent";
+    case "initializing_session":
+      return "Initializing";
+    case "building_prompt":
+      return "Planning";
+    case "streaming_turn":
+      return "Working";
+    case "refreshing_issue_state":
+      return "Syncing state";
+    case "finishing":
+      return "Finishing";
+    default:
+      return phase;
+  }
+}
+
+function describeOperatorEvent(event: StatusSnapshot["recent_events"][number]): string {
+  if (event.message === "worker activity" && typeof event.fields?.activity === "string") {
+    return event.fields.activity;
+  }
+
+  if (event.message === "issue dispatched") {
+    return `Picked up from ${String(event.fields?.state ?? "active")}`;
+  }
+
+  if (event.message === "retry scheduled") {
+    return `Retry scheduled in ${formatElapsedShort(Number(event.fields?.delay_ms ?? 0))}`;
+  }
+
+  if (event.message.startsWith("codex ")) {
+    return event.message.replace(/^codex /, "").replaceAll("_", " ");
+  }
+
+  return event.message;
 }
 
 async function refreshSetupContext(
   setSetupContext: Dispatch<SetStateAction<DashboardSetupContext | null>>,
   setGlobalFormState: Dispatch<SetStateAction<GlobalFormState>>
 ): Promise<void> {
-  const context = await fetchJson<DashboardSetupContext>("/api/setup/context");
-  setSetupContext(context);
-  setGlobalFormState(globalConfigToForm(context.globalConfig));
+  const nextContext = await fetchJson<DashboardSetupContext>("/api/setup/context");
+  setSetupContext(nextContext);
+  setGlobalFormState(globalConfigToForm(nextContext.globalConfig));
 }
 
 async function refreshProjects(
@@ -1114,249 +1272,182 @@ async function refreshProjects(
     if (current && nextProjects.some((project) => project.id === current)) {
       return current;
     }
-    return nextProjects[0]?.id ?? null;
+
+    return current === null ? null : nextProjects[0]?.id ?? null;
   });
 }
 
-async function saveGlobalSettings(params: {
+async function saveGlobalSettings(props: {
   formState: GlobalFormState;
   setNotice: Dispatch<SetStateAction<StatusNotice>>;
   setSetupContext: Dispatch<SetStateAction<DashboardSetupContext | null>>;
   setGlobalFormState: Dispatch<SetStateAction<GlobalFormState>>;
   setProjects: Dispatch<SetStateAction<ManagedProjectRecord[]>>;
   setSelectedProjectId: Dispatch<SetStateAction<string | null>>;
-}): Promise<void> {
-  const { formState, setNotice, setSetupContext, setGlobalFormState, setProjects, setSelectedProjectId } = params;
-  setNotice({
-    kind: "saving",
-    message: "Saving shared defaults and reloading project runtimes..."
-  });
+}): Promise<boolean> {
+  const { formState, setNotice, setSetupContext, setGlobalFormState, setProjects, setSelectedProjectId } = props;
+  setNotice({ kind: "saving", message: "Saving global settings..." });
 
   try {
-    const globalConfig = await fetchJson<GlobalConfigRecord>("/api/settings/global", {
+    const body = {
+      pollingIntervalMs: parseOptionalInteger(formState.pollingIntervalMs),
+      maxConcurrentAgents: parseOptionalInteger(formState.maxConcurrentAgents),
+      linearApiKey: normalizeOptionalText(formState.linearApiKey),
+      githubToken: normalizeOptionalText(formState.githubToken),
+      clearLinearApiKey: formState.clearLinearApiKey,
+      clearGithubToken: formState.clearGithubToken
+    };
+    await fetchJson<GlobalConfigRecord>("/api/settings/global", {
       method: "PATCH",
-      body: JSON.stringify({
-        pollingIntervalMs: parseNumberField(formState.pollingIntervalMs),
-        maxConcurrentAgents: parseNumberField(formState.maxConcurrentAgents),
-        linearApiKey: normalizeOptional(formState.linearApiKey),
-        githubToken: normalizeOptional(formState.githubToken),
-        clearLinearApiKey: formState.clearLinearApiKey,
-        clearGithubToken: formState.clearGithubToken
-      })
+      body: JSON.stringify(body)
     });
-
     await refreshSetupContext(setSetupContext, setGlobalFormState);
     await refreshProjects(setProjects, setSelectedProjectId);
-    setNotice({
-      kind: "success",
-      message: `Saved shared defaults (${globalConfig.defaults.pollingIntervalMs}ms, ${globalConfig.defaults.maxConcurrentAgents} agents)`
-    });
+    setNotice({ kind: "success", message: "Global settings updated." });
+    return true;
   } catch (error) {
-    setNotice({
-      kind: "error",
-      message: error instanceof Error ? error.message : "Failed to save global settings"
-    });
+    setNotice({ kind: "error", message: errorMessage(error) });
+    return false;
   }
 }
 
-async function saveProject(params: {
+async function saveProject(props: {
   mode: "create" | "update";
   selectedProject: ManagedProjectRecord | null;
   formState: ProjectFormState;
   setNotice: Dispatch<SetStateAction<StatusNotice>>;
   setProjects: Dispatch<SetStateAction<ManagedProjectRecord[]>>;
   setSelectedProjectId: Dispatch<SetStateAction<string | null>>;
-}): Promise<void> {
-  const { mode, selectedProject, formState, setNotice, setProjects, setSelectedProjectId } = params;
-  setNotice({
-    kind: "saving",
-    message: mode === "create" ? "Creating project and activating workflow..." : "Saving project overrides..."
-  });
+}): Promise<boolean> {
+  const { mode, selectedProject, formState, setNotice, setProjects, setSelectedProjectId } = props;
+  setNotice({ kind: "saving", message: mode === "create" ? "Creating project..." : "Saving project..." });
 
   try {
-    if (mode === "update" && selectedProject) {
-      const updated = await fetchJson<ManagedProjectRecord>("/api/projects", {
-        method: "PATCH",
-        body: JSON.stringify({
-          id: selectedProject.id,
-          displayName: normalizeOptional(formState.displayName),
-          projectSlug: formState.projectSlug,
-          githubRepository: formState.githubRepository,
-          linearApiKey: normalizeOptional(formState.linearApiKey),
-          githubToken: normalizeOptional(formState.githubToken),
-          pollingIntervalMs: formState.useGlobalPollingIntervalMs ? null : parseNumberField(formState.pollingIntervalMs),
-          maxConcurrentAgents: formState.useGlobalMaxConcurrentAgents ? null : parseNumberField(formState.maxConcurrentAgents),
-          useGlobalLinearApiKey: formState.useGlobalLinearApiKey,
-          useGlobalGithubToken: formState.useGlobalGithubToken,
-          useGlobalPollingIntervalMs: formState.useGlobalPollingIntervalMs,
-          useGlobalMaxConcurrentAgents: formState.useGlobalMaxConcurrentAgents
+    const input = projectFormToApiInput(formState);
+    const result = mode === "create"
+      ? await fetchJson<ProjectSetupResult>("/api/projects", {
+          method: "POST",
+          body: JSON.stringify(input satisfies ProjectSetupInput)
         })
-      });
-
-      await refreshProjects(setProjects, setSelectedProjectId);
-      setSelectedProjectId(updated.id);
-      setNotice({
-        kind: "success",
-        message: `Saved ${projectLabel(updated)}`
-      });
-      return;
-    }
-
-    const created = await fetchJson<ProjectSetupResult>("/api/projects", {
-      method: "POST",
-      body: JSON.stringify({
-        displayName: normalizeOptional(formState.displayName),
-        projectSlug: formState.projectSlug,
-        githubRepository: formState.githubRepository,
-        linearApiKey: normalizeOptional(formState.linearApiKey),
-        githubToken: normalizeOptional(formState.githubToken),
-        pollingIntervalMs: formState.useGlobalPollingIntervalMs ? null : parseNumberField(formState.pollingIntervalMs),
-        maxConcurrentAgents: formState.useGlobalMaxConcurrentAgents ? null : parseNumberField(formState.maxConcurrentAgents),
-        useGlobalLinearApiKey: formState.useGlobalLinearApiKey,
-        useGlobalGithubToken: formState.useGlobalGithubToken,
-        useGlobalPollingIntervalMs: formState.useGlobalPollingIntervalMs,
-        useGlobalMaxConcurrentAgents: formState.useGlobalMaxConcurrentAgents
-      })
-    });
+      : await fetchJson<ManagedProjectRecord>("/api/projects", {
+          method: "PATCH",
+          body: JSON.stringify({
+            id: selectedProject!.id,
+            ...input
+          } satisfies ProjectUpdateInput)
+        });
 
     await refreshProjects(setProjects, setSelectedProjectId);
-    setSelectedProjectId(created.id);
-    setNotice({
-      kind: "success",
-      message: `Created ${projectLabel(created)}`
-    });
+    setSelectedProjectId(result.id);
+    setNotice({ kind: "success", message: mode === "create" ? "Project created." : "Project saved." });
+    return true;
   } catch (error) {
-    setNotice({
-      kind: "error",
-      message: error instanceof Error ? error.message : "Project setup failed"
-    });
-  }
-}
-
-async function deleteProject(
-  project: ManagedProjectRecord,
-  setNotice: Dispatch<SetStateAction<StatusNotice>>,
-  setProjects: Dispatch<SetStateAction<ManagedProjectRecord[]>>,
-  setSelectedProjectId: Dispatch<SetStateAction<string | null>>
-): Promise<void> {
-  if (!window.confirm(`Remove ${projectLabel(project)}? This deletes the workflow directory and local overrides for this project.`)) {
-    return;
-  }
-
-  setNotice({
-    kind: "saving",
-    message: `Removing ${projectLabel(project)}...`
-  });
-
-  try {
-    await fetchJson("/api/projects", {
-      method: "DELETE",
-      body: JSON.stringify({ id: project.id })
-    });
-    await refreshProjects(setProjects, setSelectedProjectId);
-    setNotice({
-      kind: "success",
-      message: `Removed ${projectLabel(project)}`
-    });
-  } catch (error) {
-    setNotice({
-      kind: "error",
-      message: error instanceof Error ? error.message : "Failed to remove project"
-    });
+    setNotice({ kind: "error", message: errorMessage(error) });
+    return false;
   }
 }
 
 async function toggleProjectRuntime(
   project: ManagedProjectRecord,
-  action: "start" | "stop",
+  intent: "start" | "stop",
   setNotice: Dispatch<SetStateAction<StatusNotice>>,
   setProjects: Dispatch<SetStateAction<ManagedProjectRecord[]>>,
   setSelectedProjectId: Dispatch<SetStateAction<string | null>>,
-  setProjectFormState?: Dispatch<SetStateAction<ProjectFormState>>
+  setProjectFormState: Dispatch<SetStateAction<ProjectFormState>>
 ): Promise<void> {
-  setNotice({
-    kind: "saving",
-    message: `${action === "start" ? "Starting" : "Stopping"} ${projectLabel(project)}...`
-  });
+  setNotice({ kind: "saving", message: intent === "start" ? `Starting ${projectLabel(project)}...` : `Stopping ${projectLabel(project)}...` });
 
   try {
-    const updated = await fetchJson<ManagedProjectRecord>(`/api/projects/${action}`, {
+    const endpoint = intent === "start" ? "/api/projects/start" : "/api/projects/stop";
+    const updated = await fetchJson<ManagedProjectRecord>(endpoint, {
       method: "POST",
       body: JSON.stringify({ id: project.id })
     });
-    await refreshProjects(setProjects, setSelectedProjectId);
+    setProjects((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
     setSelectedProjectId(updated.id);
-    if (setProjectFormState) {
-      setProjectFormState(projectToForm(updated));
-    }
-    setNotice({
-      kind: "success",
-      message: `${action === "start" ? "Started" : "Stopped"} ${projectLabel(updated)}`
-    });
+    setProjectFormState(projectToForm(updated));
+    setNotice({ kind: "success", message: intent === "start" ? "Project started." : "Project stopped." });
   } catch (error) {
-    setNotice({
-      kind: "error",
-      message: error instanceof Error ? error.message : `Failed to ${action} project`
+    setNotice({ kind: "error", message: errorMessage(error) });
+  }
+}
+
+async function removeProject(
+  project: ManagedProjectRecord,
+  setNotice: Dispatch<SetStateAction<StatusNotice>>,
+  setProjects: Dispatch<SetStateAction<ManagedProjectRecord[]>>,
+  setSelectedProjectId: Dispatch<SetStateAction<string | null>>
+): Promise<boolean> {
+  if (!window.confirm(`Remove ${projectLabel(project)}?`)) {
+    return false;
+  }
+
+  setNotice({ kind: "saving", message: `Removing ${projectLabel(project)}...` });
+
+  try {
+    await fetchVoid("/api/projects", {
+      method: "DELETE",
+      body: JSON.stringify({ id: project.id })
     });
+    await refreshProjects(setProjects, setSelectedProjectId);
+    setSelectedProjectId(null);
+    setNotice({ kind: "success", message: "Project removed." });
+    return true;
+  } catch (error) {
+    setNotice({ kind: "error", message: errorMessage(error) });
+    return false;
   }
 }
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    headers: {
-      "content-type": "application/json",
-      ...(init?.headers ?? {})
-    },
-    ...init
-  });
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  const payload = (await response.json()) as unknown;
-  if (!response.ok) {
-    const message =
-      payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string"
-        ? payload.error
-        : `request failed with status ${response.status}`;
-    throw new Error(message);
-  }
-
-  return payload as T;
-}
-
-function emptySnapshot(): StatusSnapshot {
+function projectFormToApiInput(formState: ProjectFormState): ProjectSetupInput {
   return {
-    updated_at: new Date(0).toISOString(),
-    project_count: 0,
-    running_count: 0,
-    retry_count: 0,
-    completed_count: 0,
-    claimed_count: 0,
-    projects: [],
-    running: [],
-    retries: [],
-    codex_totals: {
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      secondsRunning: 0
-    },
-    recent_events: []
+    displayName: normalizeOptionalText(formState.displayName),
+    projectSlug: formState.projectSlug.trim(),
+    githubRepository: formState.githubRepository.trim(),
+    linearApiKey: normalizeOptionalText(formState.linearApiKey),
+    githubToken: normalizeOptionalText(formState.githubToken),
+    pollingIntervalMs: parseOptionalInteger(formState.pollingIntervalMs),
+    maxConcurrentAgents: parseOptionalInteger(formState.maxConcurrentAgents),
+    useGlobalLinearApiKey: formState.useGlobalLinearApiKey,
+    useGlobalGithubToken: formState.useGlobalGithubToken,
+    useGlobalPollingIntervalMs: formState.useGlobalPollingIntervalMs,
+    useGlobalMaxConcurrentAgents: formState.useGlobalMaxConcurrentAgents
   };
 }
 
-function emptyGlobalConfig(): GlobalConfigRecord {
+function projectLabel(project: ManagedProjectRecord): string {
+  return normalizeOptionalText(project.displayName) ?? project.projectSlug;
+}
+
+function projectInitial(project: ManagedProjectRecord): string {
+  const label = projectLabel(project).trim();
+  return label.slice(0, 1).toUpperCase();
+}
+
+function projectToForm(project: ManagedProjectRecord): ProjectFormState {
   return {
-    projectsRoot: "",
-    envFilePath: "",
-    defaults: {
-      pollingIntervalMs: 30000,
-      maxConcurrentAgents: 10
-    },
-    hasLinearApiKey: false,
-    hasGithubToken: false
+    displayName: project.displayName ?? "",
+    projectSlug: project.projectSlug,
+    githubRepository: project.githubRepository ?? "",
+    linearApiKey: "",
+    githubToken: "",
+    useGlobalLinearApiKey: project.usesGlobalLinearApiKey,
+    useGlobalGithubToken: project.usesGlobalGithubToken,
+    pollingIntervalMs: String(project.pollingIntervalMs),
+    maxConcurrentAgents: String(project.maxConcurrentAgents),
+    useGlobalPollingIntervalMs: project.usesGlobalPollingIntervalMs,
+    useGlobalMaxConcurrentAgents: project.usesGlobalMaxConcurrentAgents
+  };
+}
+
+function globalConfigToForm(globalConfig: GlobalConfigRecord): GlobalFormState {
+  return {
+    pollingIntervalMs: String(globalConfig.defaults.pollingIntervalMs),
+    maxConcurrentAgents: String(globalConfig.defaults.maxConcurrentAgents),
+    linearApiKey: "",
+    githubToken: "",
+    clearLinearApiKey: false,
+    clearGithubToken: false
   };
 }
 
@@ -1387,30 +1478,37 @@ function emptyProjectForm(): ProjectFormState {
   };
 }
 
-function globalConfigToForm(globalConfig: GlobalConfigRecord): GlobalFormState {
+function emptyGlobalConfig(): GlobalConfigRecord {
   return {
-    pollingIntervalMs: String(globalConfig.defaults.pollingIntervalMs),
-    maxConcurrentAgents: String(globalConfig.defaults.maxConcurrentAgents),
-    linearApiKey: "",
-    githubToken: "",
-    clearLinearApiKey: false,
-    clearGithubToken: false
+    projectsRoot: "",
+    envFilePath: "",
+    defaults: {
+      pollingIntervalMs: 30000,
+      maxConcurrentAgents: 10
+    },
+    hasLinearApiKey: false,
+    hasGithubToken: false
   };
 }
 
-function projectToForm(project: ManagedProjectRecord): ProjectFormState {
+function emptySnapshot(): StatusSnapshot {
   return {
-    displayName: project.displayName ?? "",
-    projectSlug: project.projectSlug,
-    githubRepository: project.githubRepository ?? "",
-    linearApiKey: "",
-    githubToken: "",
-    useGlobalLinearApiKey: project.usesGlobalLinearApiKey,
-    useGlobalGithubToken: project.usesGlobalGithubToken,
-    pollingIntervalMs: project.usesGlobalPollingIntervalMs ? "" : String(project.pollingIntervalMs),
-    maxConcurrentAgents: project.usesGlobalMaxConcurrentAgents ? "" : String(project.maxConcurrentAgents),
-    useGlobalPollingIntervalMs: project.usesGlobalPollingIntervalMs,
-    useGlobalMaxConcurrentAgents: project.usesGlobalMaxConcurrentAgents
+    updated_at: new Date(0).toISOString(),
+    project_count: 0,
+    running_count: 0,
+    retry_count: 0,
+    completed_count: 0,
+    claimed_count: 0,
+    projects: [],
+    running: [],
+    retries: [],
+    codex_totals: {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      secondsRunning: 0
+    },
+    recent_events: []
   };
 }
 
@@ -1419,20 +1517,18 @@ function filterSnapshotByProject(snapshot: StatusSnapshot, projectId: string | n
     return snapshot;
   }
 
-  const projects = snapshot.projects.filter((project) => project.workflow_path === projectId);
-  const running = snapshot.running.filter((entry) => entry.workflow_path === projectId);
-  const retries = snapshot.retries.filter((entry) => entry.workflow_path === projectId);
+  const projectMatch = snapshot.projects.filter((project) => project.workflow_path === projectId);
   return {
     ...snapshot,
-    project_count: projects.length,
-    running_count: running.length,
-    retry_count: retries.length,
-    completed_count: projects.reduce((sum, project) => sum + project.completed_count, 0),
-    claimed_count: projects.reduce((sum, project) => sum + project.claimed_count, 0),
-    projects,
-    running,
-    retries,
-    codex_totals: projects.reduce(
+    project_count: projectMatch.length,
+    running: snapshot.running.filter((entry) => entry.workflow_path === projectId),
+    retries: snapshot.retries.filter((entry) => entry.workflow_path === projectId),
+    projects: projectMatch,
+    running_count: snapshot.running.filter((entry) => entry.workflow_path === projectId).length,
+    retry_count: snapshot.retries.filter((entry) => entry.workflow_path === projectId).length,
+    completed_count: projectMatch.reduce((sum, project) => sum + project.completed_count, 0),
+    claimed_count: projectMatch.reduce((sum, project) => sum + project.claimed_count, 0),
+    codex_totals: projectMatch.reduce(
       (totals, project) => {
         totals.inputTokens += project.codex_totals.inputTokens;
         totals.outputTokens += project.codex_totals.outputTokens;
@@ -1446,71 +1542,124 @@ function filterSnapshotByProject(snapshot: StatusSnapshot, projectId: string | n
         totalTokens: 0,
         secondsRunning: 0
       }
-    )
+    ),
+    recent_events: snapshot.recent_events.filter((event) => event.fields?.workflow_path === projectId || !event.fields?.workflow_path)
   };
 }
 
-function statusMessage(connectionState: ConnectionState, snapshot: StatusSnapshot | null): string {
-  if (connectionState === "failed" && !snapshot) {
-    return "Failed to load snapshot";
-  }
-
-  if (connectionState === "reconnecting") {
-    return snapshot ? `Reconnecting… last update ${formatSnapshotTime(snapshot)}` : "Reconnecting…";
-  }
-
-  if (connectionState === "live") {
-    return snapshot ? `Live at ${formatSnapshotTime(snapshot)}` : "Live";
-  }
-
-  return snapshot ? `Connecting… last update ${formatSnapshotTime(snapshot)}` : "Connecting…";
+function sortRunningEntries(entries: StatusRunningEntry[]): StatusRunningEntry[] {
+  return [...entries].sort((left, right) => left.started_at_ms - right.started_at_ms || left.identifier.localeCompare(right.identifier));
 }
 
-function formatSnapshotTime(snapshot: StatusSnapshot): string {
-  return new Date(snapshot.updated_at).toLocaleTimeString();
+function sortRetryEntries(entries: StatusRetryEntry[]): StatusRetryEntry[] {
+  return [...entries].sort((left, right) => left.due_at_ms - right.due_at_ms || left.identifier.localeCompare(right.identifier));
 }
 
-function formatDurationFromMs(durationMs: number): string {
-  const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`;
+function connectionLabel(connectionState: ConnectionState): string {
+  switch (connectionState) {
+    case "live":
+      return "Live";
+    case "reconnecting":
+      return "Syncing";
+    case "failed":
+      return "Offline";
+    case "connecting":
+    default:
+      return "Connecting";
   }
-  return `${minutes}m ${seconds}s`;
 }
 
-function formatRelativeTime(targetMs: number): string {
-  const delta = Math.max(0, targetMs - Date.now());
-  return formatDurationFromMs(delta);
-}
-
-function shortActivity(value: string): string {
-  if (value.length <= 96) {
-    return value;
+function formatSnapshotAge(snapshot: StatusSnapshot): string {
+  if (!snapshot.updated_at) {
+    return "just now";
   }
 
-  return `${value.slice(0, 93)}…`;
+  return formatRelativeTime(snapshot.updated_at);
+}
+
+function formatRelativeTime(value: string): string {
+  const elapsed = Date.now() - Date.parse(value);
+  if (!Number.isFinite(elapsed) || elapsed < 0) {
+    return "just now";
+  }
+
+  if (elapsed < 60_000) {
+    return `${Math.max(1, Math.floor(elapsed / 1000))}s ago`;
+  }
+
+  return `${formatElapsedShort(elapsed)} ago`;
+}
+
+function parseOptionalInteger(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(trimmed, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeOptionalText(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(init?.headers ?? {})
+    },
+    ...init
+  });
+
+  const text = await response.text();
+  const body = text ? (JSON.parse(text) as unknown) : null;
+  if (!response.ok) {
+    const errorText =
+      body && typeof body === "object" && "error" in body && typeof (body as { error?: unknown }).error === "string"
+        ? (body as { error: string }).error
+        : `Request failed (${response.status})`;
+    throw new Error(errorText);
+  }
+
+  return body as T;
+}
+
+async function fetchVoid(url: string, init?: RequestInit): Promise<void> {
+  const response = await fetch(url, {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      ...(init?.headers ?? {})
+    },
+    ...init
+  });
+
+  if (response.ok) {
+    return;
+  }
+
+  const text = await response.text();
+  const body = text ? (JSON.parse(text) as unknown) : null;
+  const message =
+    body && typeof body === "object" && "error" in body && typeof (body as { error?: unknown }).error === "string"
+      ? (body as { error: string }).error
+      : `Request failed (${response.status})`;
+  throw new Error(message);
 }
 
 function formatInteger(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
 
-function normalizeOptional(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function parseNumberField(value: string): number | null {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 function readThemePreference(): ThemePreference {
   const saved = window.localStorage.getItem(themeStorageKey);
-  return saved === "light" || saved === "dark" ? saved : "system";
+  return saved === "light" || saved === "dark" || saved === "system" ? saved : "system";
 }
 
 function writeThemePreference(preference: ThemePreference): void {
@@ -1532,40 +1681,21 @@ function applyThemePreference(preference: ThemePreference): void {
   root.setAttribute("data-theme", preference);
 }
 
-function projectInitial(project: Pick<ManagedProjectRecord, "displayName" | "projectSlug">): string {
-  const label = projectLabel(project);
-  return label.slice(0, 1).toUpperCase();
+function idleNotice(message = "Settings live behind the cog. Runtime data stays here in the main view."): StatusNotice {
+  return { kind: "idle", message };
 }
 
-function projectLabel(project: Pick<ManagedProjectRecord | ProjectSetupResult, "displayName" | "projectSlug">): string {
-  return project.displayName ?? project.projectSlug;
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Request failed.";
 }
 
-function projectRuntimeLabel(project: Pick<ManagedProjectRecord, "enabled" | "runtimeRunning">): string {
-  if (project.runtimeRunning) {
-    return "running";
-  }
-
-  return project.enabled ? "ready" : "stopped";
+function joinClassName(...values: Array<string | null | undefined | false>): string {
+  return values.filter(Boolean).join(" ");
 }
 
-function projectRuntimeSentence(project: Pick<ManagedProjectRecord, "enabled" | "runtimeRunning">): string {
-  if (project.runtimeRunning) {
-    return "This project is live in the current process.";
-  }
-  if (project.enabled) {
-    return "This project is configured but not currently executing.";
-  }
-  return "This project is deliberately paused and will stay idle until started again.";
+const rootElement = document.getElementById("app");
+if (!rootElement) {
+  throw new Error("Dashboard root element not found");
 }
 
-function joinClassName(...tokens: Array<string | null | undefined | false>): string {
-  return tokens.filter(Boolean).join(" ");
-}
-
-const container = document.getElementById("app");
-if (!container) {
-  throw new Error("Dashboard root element was not found");
-}
-
-createRoot(container).render(<DashboardApp />);
+createRoot(rootElement).render(<DashboardApp />);

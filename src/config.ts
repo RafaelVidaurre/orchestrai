@@ -7,6 +7,12 @@ import { DEFAULT_WORKSPACE_ROOT, expandPathLikeValue, normalizeState, resolveSec
 const DEFAULT_LINEAR_ENDPOINT = "https://api.linear.app/graphql";
 const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"];
 const DEFAULT_TERMINAL_STATES = ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"];
+const DEFAULT_CODEX_COMMAND =
+  "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server";
+const DEFAULT_TURN_SANDBOX_POLICY = {
+  type: "workspaceWrite",
+  networkAccess: true
+} as const;
 
 export function buildServiceConfig(
   workflowPath: string,
@@ -70,10 +76,11 @@ export function buildServiceConfig(
       maxTurns: coercePositiveInteger(agent.max_turns, 20)
     },
     codex: {
-      command: typeof codex.command === "string" && codex.command.trim().length > 0 ? codex.command.trim() : "codex app-server",
+      command:
+        typeof codex.command === "string" && codex.command.trim().length > 0 ? codex.command.trim() : DEFAULT_CODEX_COMMAND,
       approvalPolicy: codex.approval_policy ?? "never",
       threadSandbox: codex.thread_sandbox ?? "workspace-write",
-      turnSandboxPolicy: codex.turn_sandbox_policy ?? null,
+      turnSandboxPolicy: codex.turn_sandbox_policy ?? DEFAULT_TURN_SANDBOX_POLICY,
       turnTimeoutMs: coercePositiveInteger(codex.turn_timeout_ms, 3600000),
       readTimeoutMs: coercePositiveInteger(codex.read_timeout_ms, 5000),
       stallTimeoutMs: coerceInteger(codex.stall_timeout_ms, 300000)
@@ -184,13 +191,20 @@ function coerceStateLimitMap(value: unknown): Record<string, number> {
 }
 
 function applyWorkflowSemanticAdjustments(activeStates: string[], promptTemplate: string): string[] {
-  if (!/\bHuman Review\b/.test(promptTemplate)) {
+  const requiredStates = ["Human Review", "Merging", "Rework"].filter((requiredState) => {
+    const pattern = new RegExp(`\\b${requiredState.replace(/\s+/g, "\\s+")}\\b`);
+    return pattern.test(promptTemplate);
+  });
+
+  if (requiredStates.length === 0) {
     return activeStates;
   }
 
-  if (activeStates.some((state) => normalizeState(state) === normalizeState("Human Review"))) {
-    return activeStates;
-  }
+  return requiredStates.reduce<string[]>((nextStates, requiredState) => {
+    if (nextStates.some((state) => normalizeState(state) === normalizeState(requiredState))) {
+      return nextStates;
+    }
 
-  return [...activeStates, "Human Review"];
+    return [...nextStates, requiredState];
+  }, activeStates);
 }

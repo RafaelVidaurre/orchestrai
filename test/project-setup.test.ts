@@ -39,6 +39,14 @@ describe("project setup", () => {
       expect(workflow).toContain("enabled: true");
       expect(workflow).toContain("interval_ms: 15000");
       expect(workflow).toContain("max_concurrent_agents: 4");
+      expect(workflow).toContain("- Merging");
+      expect(workflow).toContain("- Rework");
+      expect(workflow).toContain("model_reasoning_effort=xhigh");
+      expect(workflow).toContain("shell_environment_policy.inherit=all");
+      expect(workflow).toContain("turn_sandbox_policy:");
+      expect(workflow).toContain("networkAccess: true");
+      expect(workflow).toContain("## Step 0: Determine current ticket state and route");
+      expect(workflow).toContain("## Codex Workpad");
       expect(envFile).toContain('LINEAR_API_KEY="lin_api_123"');
       expect(envFile).toContain('PROJECT_SLUG="mmorpg-8915add3c6c3"');
       expect(envFile).toContain('GITHUB_REPOSITORY="example/game-client"');

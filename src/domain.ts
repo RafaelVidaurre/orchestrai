@@ -152,6 +152,13 @@ export interface WorkerActivityEvent {
   message: string;
 }
 
+export interface AgentActivityEntry {
+  timestamp: string;
+  source: "worker" | "codex" | "system";
+  phase: string | null;
+  message: string;
+}
+
 export interface WorkerSuccessOutcome {
   kind: "normal";
   issue: Issue;
@@ -203,6 +210,7 @@ export interface RunningEntry {
   cancellingReason: WorkerCancelReason | null;
   phase: WorkerActivityEvent["phase"] | "queued";
   activity: string;
+  recentActivity: AgentActivityEntry[];
 }
 
 export interface RuntimeTotals {
@@ -289,6 +297,7 @@ export interface StatusRunningEntry {
   codex_output_tokens: number;
   codex_total_tokens: number;
   issue_url: string | null;
+  recent_activity: AgentActivityEntry[];
 }
 
 export interface StatusRetryEntry {

@@ -7,7 +7,7 @@ import { AppController, type AppControlState } from "./app-controller";
 import { openUrlInBrowser } from "./browser";
 import type { LinearRateLimits, StatusRetryEntry, StatusRunningEntry, StatusSnapshot } from "./domain";
 import { Logger } from "./logger";
-import { buildAgentTableLines, buildRetryLines, formatElapsedShort } from "./tui-layout";
+import { buildAgentTableLines, buildEventLines, buildRetryLines, formatElapsedShort } from "./tui-layout";
 import { resolveWorkflowContext } from "./workflow";
 
 const REFRESH_INTERVAL_MS = 1000;
@@ -25,6 +25,7 @@ function OrchestraiTuiApp(props: { controller: AppController }) {
   const [fatalError, setFatalError] = useState<string | null>(null);
   const startedAtMs = useRef(Date.now());
   const closing = useRef(false);
+  const contentWidth = Math.max(64, stdoutColumns - 20);
   const runningEntries = useMemo(() => sortRunningEntries(snapshot.running), [snapshot.running]);
   const retryEntries = useMemo(() => sortRetryEntries(snapshot.retries), [snapshot.retries]);
   const capacity = useMemo(
@@ -34,12 +35,16 @@ function OrchestraiTuiApp(props: { controller: AppController }) {
   const projectLine = useMemo(() => resolveProjectLine(snapshot), [snapshot]);
   const rateLimitLine = useMemo(() => resolveRateLimitLine(snapshot), [snapshot]);
   const agentTableLines = useMemo(
-    () => buildAgentTableLines(runningEntries, Math.max(88, stdoutColumns - 6), nowMs),
-    [nowMs, runningEntries, stdoutColumns]
+    () => buildAgentTableLines(runningEntries, Math.max(72, contentWidth), nowMs),
+    [contentWidth, nowMs, runningEntries]
+  );
+  const eventLines = useMemo(
+    () => buildEventLines(snapshot.recent_events, contentWidth),
+    [contentWidth, snapshot.recent_events]
   );
   const retryLines = useMemo(
-    () => buildRetryLines(retryEntries, Math.max(72, stdoutColumns - 6), nowMs),
-    [nowMs, retryEntries, stdoutColumns]
+    () => buildRetryLines(retryEntries, contentWidth, nowMs),
+    [contentWidth, nowMs, retryEntries]
   );
 
   useEffect(() => {
@@ -123,7 +128,7 @@ function OrchestraiTuiApp(props: { controller: AppController }) {
   return (
     <Box padding={1}>
       <Box borderStyle="round" borderColor="gray" paddingX={1} paddingY={0} flexDirection="column" width={stdoutColumns}>
-        <PanelTitle title="ORCHESTRAI STATUS" />
+        <PanelTitle title="ORCHESTRAI CONTROL" />
         <KeyValueLine label="Agents" value={`${snapshot.running_count}/${capacity || snapshot.running_count || 0}`} valueColor="yellowBright" />
         <KeyValueLine label="Projects" value={String(snapshot.project_count)} valueColor="cyanBright" />
         <KeyValueLine label="Session" value={formatElapsedShort(nowMs - startedAtMs.current)} valueColor="magentaBright" />
@@ -139,6 +144,9 @@ function OrchestraiTuiApp(props: { controller: AppController }) {
 
         <SectionTitle title="Running" />
         <TableBlock lines={agentTableLines} />
+
+        <SectionTitle title="Recent Activity" />
+        <TableBlock lines={eventLines} mutedEmpty />
 
         <SectionTitle title="Backoff Queue" />
         <TableBlock lines={retryLines} mutedEmpty />

@@ -80,7 +80,7 @@ describe("buildServiceConfig", () => {
     expect(scopedEnv.PROJECT_SLUG).toBe("from-workflow");
   });
 
-  it("auto-includes Human Review when the workflow prompt expects it", () => {
+  it("auto-includes workflow-managed active states when the prompt expects them", () => {
     const workflow: WorkflowDefinition = {
       config: {
         tracker: {
@@ -90,11 +90,37 @@ describe("buildServiceConfig", () => {
           active_states: ["Todo", "In Progress"]
         }
       },
-      prompt_template: "Move the ticket to Human Review when complete."
+      prompt_template: "Move the ticket to Human Review when complete. When approved, move it to Merging. If changes are requested, move it to Rework."
     };
 
     const config = buildServiceConfig("/tmp/workflow.md", workflow, {});
     expect(config.tracker.activeStates).toContain("Human Review");
+    expect(config.tracker.activeStates).toContain("Merging");
+    expect(config.tracker.activeStates).toContain("Rework");
+  });
+
+  it("uses the Symphony-style codex defaults when omitted", () => {
+    const workflow: WorkflowDefinition = {
+      config: {
+        tracker: {
+          kind: "linear",
+          api_key: "token",
+          project_slug: "project-alpha"
+        }
+      },
+      prompt_template: "hello"
+    };
+
+    const config = buildServiceConfig("/tmp/workflow.md", workflow, {});
+    expect(config.codex.command).toBe(
+      "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server"
+    );
+    expect(config.codex.approvalPolicy).toBe("never");
+    expect(config.codex.threadSandbox).toBe("workspace-write");
+    expect(config.codex.turnSandboxPolicy).toEqual({
+      type: "workspaceWrite",
+      networkAccess: true
+    });
   });
 
   it("respects project.enabled when explicitly disabled", () => {

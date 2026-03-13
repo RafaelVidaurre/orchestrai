@@ -15,6 +15,7 @@ import type {
   StatusSnapshot,
   StatusSource
 } from "./domain";
+import { dashboardStyles } from "./dashboard-styles";
 import { ServiceError } from "./errors";
 import { validateGlobalConfigInput } from "./global-config";
 import { Logger } from "./logger";
@@ -32,10 +33,13 @@ export interface DashboardProjectSetupService {
 }
 
 export class StatusServer {
+  private static readonly HEARTBEAT_INTERVAL_MS = 15000;
+
   private server: http.Server | null = null;
   private readonly clients = new Set<ServerResponse>();
   private unsubscribe: (() => void) | null = null;
   private dashboardAssetPromise: Promise<Buffer> | null = null;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
 
   constructor(
     private readonly statusSource: StatusSource,
@@ -51,6 +55,10 @@ export class StatusServer {
     this.unsubscribe = this.statusSource.subscribe((snapshot) => {
       this.broadcastSnapshot(snapshot);
     });
+    this.heartbeatTimer = setInterval(() => {
+      this.broadcastHeartbeat();
+    }, StatusServer.HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer.unref();
 
     await new Promise<void>((resolve, reject) => {
       this.server?.once("error", reject);
@@ -80,6 +88,10 @@ export class StatusServer {
   async stop(): Promise<void> {
     this.unsubscribe?.();
     this.unsubscribe = null;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
 
     for (const client of this.clients) {
       client.end();
@@ -400,6 +412,13 @@ export class StatusServer {
       client.write(payload);
     }
   }
+
+  private broadcastHeartbeat(): void {
+    const payload = `event: heartbeat\ndata: {"timestamp":"${new Date().toISOString()}"}\n\n`;
+    for (const client of this.clients) {
+      client.write(payload);
+    }
+  }
 }
 
 async function readDashboardAsset(): Promise<Buffer> {
@@ -456,7 +475,7 @@ function renderDashboardHtml(bootstrap: DashboardBootstrap): string {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
     <title>OrchestrAI Dashboard</title>
-    <style>${renderDashboardStyles()}</style>
+    <style>${dashboardStyles}</style>
   </head>
   <body>
     <div id="app"></div>

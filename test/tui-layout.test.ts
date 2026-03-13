@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import type { StatusRetryEntry, StatusRunningEntry } from "../src/domain";
-import { buildAgentTableLines, buildRetryLines, compactActivity, formatElapsedShort } from "../src/tui-layout";
+import type { OperatorEvent, StatusRetryEntry, StatusRunningEntry } from "../src/domain";
+import { buildAgentTableLines, buildEventLines, buildRetryLines, compactActivity, formatElapsedShort } from "../src/tui-layout";
 
 describe("tui layout helpers", () => {
   it("formats elapsed durations for short and long runs", () => {
@@ -41,7 +41,15 @@ describe("tui layout helpers", () => {
       codex_input_tokens: 1200,
       codex_output_tokens: 340,
       codex_total_tokens: 1540,
-      issue_url: "https://linear.app/issue/MT-101"
+      issue_url: "https://linear.app/issue/MT-101",
+      recent_activity: [
+        {
+          timestamp: new Date(60_000).toISOString(),
+          source: "worker",
+          phase: "streaming_turn",
+          message: "Investigating runtime desync in the audio playback pipeline"
+        }
+      ]
     };
 
     const lines = buildAgentTableLines([entry], 112, 65_000);
@@ -50,6 +58,7 @@ describe("tui layout helpers", () => {
     expect(lines[1]).toContain("MT-101");
     expect(lines[1]).toContain("Alpha");
     expect(lines[1]).toContain("1m 5s");
+    expect(lines[1]).toContain("working");
     expect(lines[1]).toContain("Investigating runtime desync");
   });
 
@@ -73,5 +82,24 @@ describe("tui layout helpers", () => {
     expect(lines[1]).toContain("MT-202");
     expect(lines[1]).toContain("0m 10s");
     expect(lines[1]).toContain("Retry stuck PR reconciliation");
+  });
+
+  it("builds an operator event table for recent activity", () => {
+    const event: OperatorEvent = {
+      timestamp: new Date(Date.now() - 30_000).toISOString(),
+      level: "info",
+      message: "worker activity",
+      issueId: "issue-1",
+      issueIdentifier: "MT-101",
+      fields: {
+        activity: "Turn 1 finished; issue moved Todo -> In Progress"
+      }
+    };
+
+    const lines = buildEventLines([event], 100);
+
+    expect(lines[0]).toContain("EVENT");
+    expect(lines[1]).toContain("MT-101");
+    expect(lines[1]).toContain("issue moved Todo -> In Progress");
   });
 });

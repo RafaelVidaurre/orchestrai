@@ -1,4 +1,4 @@
-import type { StatusRetryEntry, StatusRunningEntry } from "./domain";
+import type { OperatorEvent, StatusRetryEntry, StatusRunningEntry } from "./domain";
 
 export function formatElapsedShort(durationMs: number): string {
   const totalSeconds = Math.max(0, Math.floor(durationMs / 1000));
@@ -18,14 +18,13 @@ export function buildAgentTableLines(entries: StatusRunningEntry[], width: numbe
     return ["No active agents."];
   }
 
-  const normalizedWidth = Math.max(width, 88);
+  const normalizedWidth = Math.max(width, 56);
   const columns = resolveAgentColumns(normalizedWidth);
   const header = [
     fitCell("ID", columns.identifier),
     fitCell("PROJECT", columns.project),
-    fitCell("STATE", columns.state),
     fitCell("AGE", columns.age),
-    fitCell("TOKENS", columns.tokens),
+    fitCell("PHASE", columns.phase),
     fitCell("ACTIVITY", columns.activity)
   ].join("  ");
 
@@ -35,10 +34,39 @@ export function buildAgentTableLines(entries: StatusRunningEntry[], width: numbe
       [
         fitCell(entry.identifier, columns.identifier),
         fitCell(entry.project_name ?? entry.project_slug, columns.project),
-        fitCell(entry.state, columns.state),
         fitCell(formatElapsedShort(nowMs - entry.started_at_ms), columns.age),
-        fitCell(formatInteger(entry.codex_total_tokens), columns.tokens),
+        fitCell(compactActivity(humanizePhase(entry.phase)), columns.phase),
         fitCell(compactActivity(entry.activity), columns.activity)
+      ].join("  ")
+    )
+  ];
+}
+
+export function buildEventLines(events: OperatorEvent[], width: number): string[] {
+  if (events.length === 0) {
+    return ["No recent events."];
+  }
+
+  const normalizedWidth = Math.max(width, 56);
+  const columns = {
+    time: 8,
+    issue: normalizedWidth >= 72 ? 12 : 10,
+    message: Math.max(12, normalizedWidth - 8 - (normalizedWidth >= 72 ? 12 : 10) - 4)
+  };
+
+  const header = [
+    fitCell("WHEN", columns.time),
+    fitCell("ISSUE", columns.issue),
+    fitCell("EVENT", columns.message)
+  ].join("  ");
+
+  return [
+    header,
+    ...events.slice(0, 8).map((event) =>
+      [
+        fitCell(formatEventAge(event.timestamp), columns.time),
+        fitCell(event.issueIdentifier ?? "runtime", columns.issue),
+        fitCell(compactActivity(describeEvent(event)), columns.message)
       ].join("  ")
     )
   ];
@@ -49,11 +77,11 @@ export function buildRetryLines(entries: StatusRetryEntry[], width: number, nowM
     return ["No queued retries."];
   }
 
-  const normalizedWidth = Math.max(width, 72);
+  const normalizedWidth = Math.max(width, 56);
   const columns = {
-    identifier: 12,
-    due: 10,
-    title: Math.max(20, normalizedWidth - 12 - 10 - 4)
+    identifier: normalizedWidth >= 72 ? 12 : 10,
+    due: normalizedWidth >= 72 ? 10 : 8,
+    title: Math.max(12, normalizedWidth - (normalizedWidth >= 72 ? 12 : 10) - (normalizedWidth >= 72 ? 10 : 8) - 4)
   };
 
   const header = [
@@ -87,27 +115,70 @@ export function fitCell(value: string, width: number): string {
 function resolveAgentColumns(width: number): {
   identifier: number;
   project: number;
-  state: number;
   age: number;
-  tokens: number;
+  phase: number;
   activity: number;
 } {
-  const identifier = 10;
-  const project = width >= 120 ? 16 : 12;
-  const state = 12;
-  const age = 9;
-  const tokens = width >= 120 ? 12 : 10;
-  const used = identifier + project + state + age + tokens + 10;
+  const identifier = width >= 72 ? 10 : 9;
+  const project = width >= 120 ? 16 : width >= 72 ? 12 : 10;
+  const age = width >= 72 ? 9 : 7;
+  const phase = width >= 120 ? 16 : width >= 72 ? 12 : 9;
+  const used = identifier + project + age + phase + 8;
   return {
     identifier,
     project,
-    state,
     age,
-    tokens,
-    activity: Math.max(24, width - used)
+    phase,
+    activity: Math.max(12, width - used)
   };
 }
 
-function formatInteger(value: number): string {
-  return new Intl.NumberFormat().format(value);
+function humanizePhase(phase: string): string {
+  switch (phase) {
+    case "preparing_workspace":
+      return "preparing";
+    case "running_before_run_hook":
+      return "preflight";
+    case "launching_agent_process":
+      return "launching";
+    case "initializing_session":
+      return "init";
+    case "building_prompt":
+      return "planning";
+    case "streaming_turn":
+      return "working";
+    case "refreshing_issue_state":
+      return "syncing";
+    case "finishing":
+      return "finishing";
+    default:
+      return phase;
+  }
+}
+
+function formatEventAge(timestamp: string): string {
+  const elapsedMs = Date.now() - Date.parse(timestamp);
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 1000) {
+    return "now";
+  }
+
+  return formatElapsedShort(elapsedMs);
+}
+
+function describeEvent(event: OperatorEvent): string {
+  if (event.message === "worker activity" && typeof event.fields?.activity === "string") {
+    return event.fields.activity;
+  }
+
+  if (event.message === "retry scheduled") {
+    return typeof event.fields?.delay_ms === "number"
+      ? `retry in ${formatElapsedShort(event.fields.delay_ms)}`
+      : "retry scheduled";
+  }
+
+  if (event.message === "issue dispatched") {
+    return `picked up from ${String(event.fields?.state ?? "active")}`;
+  }
+
+  return event.message.replace(/^codex /, "");
 }

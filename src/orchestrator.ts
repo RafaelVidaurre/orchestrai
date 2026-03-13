@@ -1,6 +1,7 @@
 import path from "node:path";
 
 import type {
+  AgentActivityEntry,
   CodexRuntimeEvent,
   Issue,
   LinearProjectInfo,
@@ -32,6 +33,7 @@ import { WorkspaceManager } from "./workspace";
 
 export class Orchestrator {
   private static readonly MAX_RECENT_EVENTS = 80;
+  private static readonly MAX_AGENT_ACTIVITY = 12;
 
   private readonly logger: Logger;
   private readonly workflowManager: WorkflowManager;
@@ -175,7 +177,8 @@ export class Orchestrator {
         codex_input_tokens: entry.codexInputTokens,
         codex_output_tokens: entry.codexOutputTokens,
         codex_total_tokens: entry.codexTotalTokens,
-        issue_url: entry.issue.url
+        issue_url: entry.issue.url,
+        recent_activity: [...entry.recentActivity]
       })),
       retries: [...this.retryAttempts.values()].map((entry) => ({
         workflow_path: workflow.config.workflowPath,
@@ -291,7 +294,15 @@ export class Orchestrator {
       turnCount: 0,
       cancellingReason: null,
       phase: "queued",
-      activity: "Waiting for worker activity"
+      activity: "Waiting for worker activity",
+      recentActivity: [
+        {
+          timestamp: new Date().toISOString(),
+          source: "system",
+          phase: "queued",
+          message: `Dispatched from ${issue.state}`
+        }
+      ]
     };
 
     this.running.set(issue.id, entry);
@@ -542,6 +553,20 @@ export class Orchestrator {
     entry.phase = event.phase;
     entry.activity = event.message;
     entry.lastCodexTimestampMs = Date.parse(event.timestamp);
+    this.appendAgentActivity(entry, {
+      timestamp: event.timestamp,
+      source: "worker",
+      phase: event.phase,
+      message: event.message
+    });
+    if (shouldRecordWorkerActivity(event.phase)) {
+      this.recordEvent("info", "worker activity", {
+        issue_id: issueId,
+        issue_identifier: entry.identifier,
+        phase: event.phase,
+        activity: event.message
+      });
+    }
     this.publishSnapshot();
   }
 
@@ -558,6 +583,14 @@ export class Orchestrator {
     entry.lastCodexMessage = event.message ?? event.event;
     entry.lastCodexTimestampMs = Date.parse(event.timestamp);
     entry.activity = humanizeCodexEvent(event);
+    if (shouldPersistCodexActivity(event)) {
+      this.appendAgentActivity(entry, {
+        timestamp: event.timestamp,
+        source: "codex",
+        phase: entry.phase,
+        message: humanizeCodexEvent(event)
+      });
+    }
     if (event.event === "session_started") {
       entry.phase = "streaming_turn";
     }
@@ -602,6 +635,17 @@ export class Orchestrator {
     }
 
     this.publishSnapshot();
+  }
+
+  private appendAgentActivity(entry: RunningEntry, activity: AgentActivityEntry): void {
+    const last = entry.recentActivity[0];
+    if (last && last.message === activity.message && last.phase === activity.phase && last.source === activity.source) {
+      entry.recentActivity[0] = activity;
+      return;
+    }
+
+    entry.recentActivity.unshift(activity);
+    entry.recentActivity.splice(Orchestrator.MAX_AGENT_ACTIVITY);
   }
 
   private shouldDispatchIssue(issue: Issue, config: ServiceConfig): boolean {
@@ -793,17 +837,23 @@ export class Orchestrator {
   }
 
   private recordEvent(level: OperatorEvent["level"], message: string, fields?: Record<string, unknown>): void {
+    const mergedFields = this.currentWorkflow
+      ? {
+          workflow_path: this.currentWorkflow.config.workflowPath,
+          ...(fields ?? {})
+        }
+      : fields;
     this.recentEvents.unshift({
       timestamp: new Date().toISOString(),
       level,
       message,
-      issueId: asOptionalString(fields?.issue_id),
-      issueIdentifier: asOptionalString(fields?.issue_identifier),
-      fields
+      issueId: asOptionalString(mergedFields?.issue_id),
+      issueIdentifier: asOptionalString(mergedFields?.issue_identifier),
+      fields: mergedFields
     });
     this.recentEvents.splice(Orchestrator.MAX_RECENT_EVENTS);
 
-    const logFields = fields ?? {};
+    const logFields = mergedFields ?? {};
     switch (level) {
       case "debug":
         this.logger.debug(message, logFields);
@@ -835,6 +885,31 @@ function shouldRecordCodexEvent(event: CodexRuntimeEvent): boolean {
     "startup_failed",
     "unsupported_tool_call"
   ].includes(event.event);
+}
+
+function shouldPersistCodexActivity(event: CodexRuntimeEvent): boolean {
+  return [
+    "session_started",
+    "turn_completed",
+    "turn_failed",
+    "turn_cancelled",
+    "turn_input_required",
+    "approval_auto_approved",
+    "startup_failed",
+    "unsupported_tool_call"
+  ].includes(event.event);
+}
+
+function shouldRecordWorkerActivity(phase: WorkerActivityEvent["phase"]): boolean {
+  return [
+    "preparing_workspace",
+    "running_before_run_hook",
+    "launching_agent_process",
+    "initializing_session",
+    "streaming_turn",
+    "refreshing_issue_state",
+    "finishing"
+  ].includes(phase);
 }
 
 function humanizeCodexEvent(event: CodexRuntimeEvent): string {

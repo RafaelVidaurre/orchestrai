@@ -85,8 +85,13 @@ export class IssueWorker {
         this.reportActivity("streaming_turn", `Streaming Codex turn ${turnCount}`);
         await this.session.runTurn(threadId, prompt);
         this.reportActivity("refreshing_issue_state", "Refreshing issue state from Linear");
+        const previousState = currentIssue.state;
         const refreshedIssues = await this.tracker.fetchIssueStatesByIds([currentIssue.id]);
         currentIssue = refreshedIssues[0] ?? currentIssue;
+        this.reportActivity(
+          "refreshing_issue_state",
+          describeIssueStateAfterTurn(previousState, currentIssue.state, turnCount)
+        );
 
         if (!isActiveState(currentIssue.state, this.workflow.config)) {
           break;
@@ -157,6 +162,14 @@ export class IssueWorker {
       timestamp: new Date().toISOString()
     });
   }
+}
+
+function describeIssueStateAfterTurn(previousState: string, nextState: string, turnCount: number): string {
+  if (previousState === nextState) {
+    return `Turn ${turnCount} finished; issue is still ${nextState}`;
+  }
+
+  return `Turn ${turnCount} finished; issue moved ${previousState} -> ${nextState}`;
 }
 
 function buildContinuationPrompt(issue: Issue, turnNumber: number, maxTurns: number): string {
