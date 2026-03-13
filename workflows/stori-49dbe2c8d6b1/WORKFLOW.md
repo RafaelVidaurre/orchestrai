@@ -72,32 +72,6 @@ Description:
 No description provided.
 {% endif %}
 
-## Stori Source Of Truth
-
-Before planning or implementation work, read the local Stori docs that live beside this workflow:
-
-- `workflows/stori-49dbe2c8d6b1/docs/product-vision.md`
-- `workflows/stori-49dbe2c8d6b1/docs/open-questions.md`
-- `workflows/stori-49dbe2c8d6b1/docs/harness-engineering.md`
-- `workflows/stori-49dbe2c8d6b1/harness/scenarios/*.md`
-
-Use them with the following priority:
-
-1. `docs/product-vision.md` defines the product thesis, v1 scope, and decision heuristics.
-2. `docs/open-questions.md` defines the current safe defaults for unresolved product decisions.
-3. `docs/harness-engineering.md` defines how to turn repeated work into durable harness assets.
-4. `harness/scenarios/*.md` defines the starter golden-task corpus for validation.
-
-## Stori Execution Heuristics
-
-- Default to the product vision when a ticket is underspecified.
-- If a ticket touches an unresolved question, follow the default in `docs/open-questions.md`, record the assumption in the workpad, and continue unless the ticket explicitly overrides it.
-- Prefer opinionated structure over generic flexibility.
-- Prefer canon trust, retrieval, and relationship clarity over AI or collaboration scope.
-- Prefer desktop depth plus mobile lookup and light edits over mobile-first authoring.
-- Convert repeated confusion into repo artifacts. Update the docs or scenario corpus instead of leaving the learning only in comments.
-- Do not ask humans for product-definition clarification during unattended runs. Capture the question, apply the safest default, and keep moving.
-
 Instructions:
 
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
