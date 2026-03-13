@@ -3,7 +3,7 @@ import path from "node:path";
 
 import type { Issue, ServiceConfig } from "./domain";
 
-export const DEFAULT_WORKSPACE_ROOT = path.join(os.tmpdir(), "symphony_workspaces");
+export const DEFAULT_WORKSPACE_ROOT = path.join(os.tmpdir(), "orchestrai_workspaces");
 
 export function sanitizeWorkspaceKey(identifier: string): string {
   return identifier.replace(/[^A-Za-z0-9._-]/g, "_");

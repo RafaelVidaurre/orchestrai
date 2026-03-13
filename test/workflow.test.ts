@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { ServiceError } from "../src/errors";
 import type { Issue } from "../src/domain";
-import { parseWorkflowFile, renderPrompt, resolveWorkflowPaths } from "../src/workflow";
+import { parseWorkflowFile, renderPrompt, resolveWorkflowContext, resolveWorkflowPaths } from "../src/workflow";
 
 describe("workflow parsing", () => {
   it("parses front matter and markdown body", () => {
@@ -41,6 +41,31 @@ Hello {{ issue.identifier }}`);
         path.join(root, "alpha.workflow.md"),
         path.join(root, "nested", "WORKFLOW.md")
       ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("allows an empty workflow directory context for onboarding", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "workflow-context-"));
+    try {
+      const context = await resolveWorkflowContext(path.join(root, "workflows"), { allowEmpty: true });
+      expect(context.workflowPaths).toEqual([]);
+      expect(context.projectsRoot).toBe(path.join(root, "workflows"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("derives a project root next to a single workflow file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "workflow-file-context-"));
+    try {
+      const workflowPath = path.join(root, "WORKFLOW.md");
+      await writeFile(workflowPath, "Hello");
+
+      const context = await resolveWorkflowContext(workflowPath, { allowEmpty: true });
+      expect(context.workflowPaths).toEqual([workflowPath]);
+      expect(context.projectsRoot).toBe(path.join(root, "workflows"));
     } finally {
       await rm(root, { recursive: true, force: true });
     }

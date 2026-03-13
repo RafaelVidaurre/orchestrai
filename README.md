@@ -1,4 +1,4 @@
-# Symphony Orchestrator
+# OrchestrAI
 
 This repository contains a TypeScript implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) for unattended, Linear-driven repository work.
 
@@ -27,7 +27,15 @@ yarn install
 yarn build
 yarn test
 yarn start
+yarn tui
 ```
+
+## Running OrchestrAI
+
+- `yarn start` runs the service and dashboard in headless mode.
+- `yarn tui` launches the terminal UI. It starts the runtime and dashboard, shows live status, and `Space` opens the dashboard in your browser.
+
+If no workflows exist yet, OrchestrAI still starts and the dashboard can be used to configure the first project.
 
 ## Workflow Resolution
 
@@ -75,17 +83,26 @@ Precedence is:
 - Process logs are human-readable by default.
 - Set `LOG_LEVEL=debug` for noisier runtime detail.
 - Set `LOG_FORMAT=json` for structured logs.
-- The dashboard aggregates all loaded workflows and shows per-project links, limits, active agents, queued retries, and recent orchestration events.
+- The dashboard uses an operations-first, shadcn-inspired layout with a left project rail, live agent tables, and a settings sheet for global defaults plus project overrides.
+- The TUI is built with Ink and focuses on the most legible operator signals: active agents, elapsed runtime, retries, dashboard status, and current activity summaries.
 - If multiple workflows specify dashboard settings, the first enabled server config is used.
+
+## Design Direction
+
+The operator surfaces in this repo follow the same basic direction described in OpenAI's [Harness Engineering](https://openai.com/index/harness-engineering/):
+
+- make active agent work legible at a glance
+- keep repository and workflow files as the system of record
+- separate day-to-day operations from configuration and setup
 
 ## Important Files
 
-- [`WORKFLOW.md`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/WORKFLOW.md): generic single-workflow template
-- [`src/runtime.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/runtime.ts): multi-workflow startup and aggregated snapshots
-- [`src/orchestrator.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/orchestrator.ts): per-workflow poll loop, dispatch, retries, reconciliation
-- [`src/status-server.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/status-server.ts): live aggregated dashboard
-- [`src/tracker.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/tracker.ts): Linear GraphQL adapter and project/rate-limit discovery
-- [`src/workspace.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/workspace.ts): workspace safety and hook execution
+- [`WORKFLOW.md`](/Users/rafaelvidaurre/Code/Personal/agentic-development/orchestrai/WORKFLOW.md): generic single-workflow template
+- [`src/app-controller.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/orchestrai/src/app-controller.ts): shared runtime and dashboard control plane used by CLI, TUI, and dashboard setup
+- [`src/runtime.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/orchestrai/src/runtime.ts): multi-workflow startup and aggregated snapshots
+- [`src/tui.tsx`](/Users/rafaelvidaurre/Code/Personal/agentic-development/orchestrai/src/tui.tsx): Ink-based terminal UI entrypoint
+- [`src/status-server.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/orchestrai/src/status-server.ts): live aggregated dashboard and project setup API
+- [`src/project-setup.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/orchestrai/src/project-setup.ts): workflow and env scaffolding for new projects
 
 ## Notes
 

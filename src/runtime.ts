@@ -1,9 +1,12 @@
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { LoadedWorkflow, StatusSnapshot, StatusSource } from "./domain";
+import { buildServiceConfig } from "./config";
 import { loadWorkflowEnv } from "./env";
 import { Logger } from "./logger";
 import { Orchestrator } from "./orchestrator";
+import { parseWorkflowFile } from "./workflow";
 
 interface ManagedRuntime {
   orchestrator: Orchestrator;
@@ -13,37 +16,36 @@ interface ManagedRuntime {
 }
 
 export class RuntimeManager implements StatusSource {
-  private readonly runtimes: ManagedRuntime[] = [];
+  private readonly runtimes = new Map<string, ManagedRuntime>();
+  private readonly workflowPaths = new Set<string>();
+  private readonly disabledWorkflowPaths = new Set<string>();
   private readonly subscribers = new Set<(snapshot: StatusSnapshot) => void>();
+  private started = false;
 
   constructor(
-    private readonly workflowPaths: string[],
+    workflowPaths: string[],
+    private readonly projectsRoot: string | null,
     private readonly logger: Logger = new Logger(),
     private readonly baseEnv: NodeJS.ProcessEnv = process.env
-  ) {}
+  ) {
+    workflowPaths.map((workflowPath) => path.resolve(workflowPath)).forEach((workflowPath) => {
+      this.workflowPaths.add(workflowPath);
+    });
+  }
 
   async start(): Promise<void> {
-    for (const workflowPath of this.workflowPaths) {
-      const scopedLogger = this.logger.child({
-        workflow_path: workflowPath
-      });
-      const env = await loadWorkflowEnv(path.dirname(workflowPath), this.baseEnv, scopedLogger.child({ component: "env" }));
-      const orchestrator = new Orchestrator(workflowPath, scopedLogger, env);
+    if (this.started) {
+      return;
+    }
 
+    this.started = true;
+
+    for (const workflowPath of this.workflowPaths) {
       try {
-        await orchestrator.start();
-        const workflow = await orchestrator.getCurrentWorkflow();
-        const runtime: ManagedRuntime = {
-          orchestrator,
-          workflowPath,
-          workflow,
-          unsubscribe: null
-        };
-        runtime.unsubscribe = orchestrator.subscribe(() => {
-          void this.refreshWorkflow(runtime).catch(() => undefined);
-          this.publishSnapshot();
-        });
-        this.runtimes.push(runtime);
+        await this.syncWorkflowEnabledState(workflowPath);
+        if (!this.disabledWorkflowPaths.has(workflowPath)) {
+          await this.startWorkflow(workflowPath);
+        }
       } catch (error) {
         await this.stop().catch(() => undefined);
         throw error;
@@ -54,32 +56,101 @@ export class RuntimeManager implements StatusSource {
   }
 
   async stop(): Promise<void> {
-    const stops = this.runtimes.map(async (runtime) => {
+    this.started = false;
+
+    const stops = [...this.runtimes.values()].map(async (runtime) => {
       runtime.unsubscribe?.();
       runtime.unsubscribe = null;
       await runtime.orchestrator.stop();
     });
     await Promise.all(stops);
-    this.runtimes.splice(0, this.runtimes.length);
+    this.runtimes.clear();
+    this.publishSnapshot();
+  }
+
+  async addWorkflow(workflowPath: string): Promise<boolean> {
+    const absolutePath = path.resolve(workflowPath);
+    if (this.workflowPaths.has(absolutePath)) {
+      return false;
+    }
+
+    this.workflowPaths.add(absolutePath);
+    await this.syncWorkflowEnabledState(absolutePath);
+    if (this.started) {
+      if (!this.disabledWorkflowPaths.has(absolutePath)) {
+        await this.startWorkflow(absolutePath);
+      }
+      this.publishSnapshot();
+    }
+
+    return true;
+  }
+
+  async reloadWorkflow(workflowPath: string): Promise<void> {
+    const absolutePath = path.resolve(workflowPath);
+    this.workflowPaths.add(absolutePath);
+    await this.syncWorkflowEnabledState(absolutePath);
+    await this.stopManagedRuntime(absolutePath);
+    if (this.started && !this.disabledWorkflowPaths.has(absolutePath)) {
+      await this.startWorkflow(absolutePath);
+    }
+
+    this.publishSnapshot();
+  }
+
+  async removeWorkflow(workflowPath: string): Promise<boolean> {
+    const absolutePath = path.resolve(workflowPath);
+    const hadPath = this.workflowPaths.delete(absolutePath);
+    this.disabledWorkflowPaths.delete(absolutePath);
+    const removed = await this.stopManagedRuntime(absolutePath);
+    if (hadPath || removed) {
+      this.publishSnapshot();
+    }
+    return hadPath || removed;
+  }
+
+  async enableWorkflow(workflowPath: string): Promise<boolean> {
+    const absolutePath = path.resolve(workflowPath);
+    const hadPath = this.workflowPaths.has(absolutePath);
+    this.workflowPaths.add(absolutePath);
+    this.disabledWorkflowPaths.delete(absolutePath);
+
+    if (!this.started) {
+      this.started = true;
+    }
+
+    await this.startWorkflow(absolutePath);
+    this.publishSnapshot();
+    return !hadPath || this.runtimes.has(absolutePath);
+  }
+
+  async disableWorkflow(workflowPath: string): Promise<boolean> {
+    const absolutePath = path.resolve(workflowPath);
+    this.disabledWorkflowPaths.add(absolutePath);
+    const removed = await this.stopManagedRuntime(absolutePath);
+    this.publishSnapshot();
+    return removed;
+  }
+
+  isWorkflowRunning(workflowPath: string): boolean {
+    return this.runtimes.has(path.resolve(workflowPath));
   }
 
   subscribe(listener: (snapshot: StatusSnapshot) => void): () => void {
     this.subscribers.add(listener);
-    if (this.runtimes.length > 0) {
-      listener(this.snapshot());
-    }
+    listener(this.snapshot());
     return () => {
       this.subscribers.delete(listener);
     };
   }
 
   snapshot(): StatusSnapshot {
-    const snapshots = this.runtimes.map((runtime) => runtime.orchestrator.snapshot());
+    const snapshots = [...this.runtimes.values()].map((runtime) => runtime.orchestrator.snapshot());
     return combineSnapshots(snapshots);
   }
 
   dashboardConfig(): { host: string; port: number } | null {
-    const eligible = this.runtimes
+    const eligible = [...this.runtimes.values()]
       .map((runtime) => ({
         workflow_path: runtime.workflow.config.workflowPath,
         ...runtime.workflow.config.server
@@ -114,15 +185,82 @@ export class RuntimeManager implements StatusSource {
   }
 
   private publishSnapshot(): void {
-    if (this.runtimes.length === 0) {
-      return;
-    }
-
     const snapshot = this.snapshot();
     for (const subscriber of this.subscribers) {
       subscriber(snapshot);
     }
   }
+
+  private async startWorkflow(workflowPath: string): Promise<void> {
+    if (this.runtimes.has(workflowPath)) {
+      return;
+    }
+
+    const scopedLogger = this.logger.child({
+      workflow_path: workflowPath
+    });
+    const env = await loadWorkflowEnv(
+      path.dirname(workflowPath),
+      this.baseEnv,
+      scopedLogger.child({ component: "env" }),
+      this.projectsRoot
+    );
+    const orchestrator = new Orchestrator(workflowPath, scopedLogger, env);
+
+    await orchestrator.start();
+    const workflow = await orchestrator.getCurrentWorkflow();
+    const runtime: ManagedRuntime = {
+      orchestrator,
+      workflowPath,
+      workflow,
+      unsubscribe: null
+    };
+    runtime.unsubscribe = orchestrator.subscribe(() => {
+      void this.refreshWorkflow(runtime).catch(() => undefined);
+      this.publishSnapshot();
+    });
+    this.runtimes.set(workflowPath, runtime);
+  }
+
+  private async syncWorkflowEnabledState(workflowPath: string): Promise<void> {
+    const enabled = await readWorkflowEnabled(
+      workflowPath,
+      this.baseEnv,
+      this.projectsRoot,
+      this.logger.child({ workflow_path: workflowPath })
+    );
+    if (enabled) {
+      this.disabledWorkflowPaths.delete(workflowPath);
+      return;
+    }
+
+    this.disabledWorkflowPaths.add(workflowPath);
+  }
+
+  private async stopManagedRuntime(workflowPath: string): Promise<boolean> {
+    const runtime = this.runtimes.get(workflowPath);
+    if (!runtime) {
+      return false;
+    }
+
+    runtime.unsubscribe?.();
+    runtime.unsubscribe = null;
+    await runtime.orchestrator.stop();
+    this.runtimes.delete(workflowPath);
+    return true;
+  }
+}
+
+async function readWorkflowEnabled(
+  workflowPath: string,
+  baseEnv: NodeJS.ProcessEnv,
+  projectsRoot: string | null,
+  logger: Logger
+): Promise<boolean> {
+  const env = await loadWorkflowEnv(path.dirname(workflowPath), baseEnv, logger.child({ component: "env" }), projectsRoot);
+  const content = await readFile(workflowPath, "utf8");
+  const definition = parseWorkflowFile(content);
+  return buildServiceConfig(workflowPath, definition, env).project.enabled;
 }
 
 function combineSnapshots(snapshots: StatusSnapshot[]): StatusSnapshot {

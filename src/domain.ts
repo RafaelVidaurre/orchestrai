@@ -37,6 +37,11 @@ export interface PollingConfig {
   intervalMs: number;
 }
 
+export interface ProjectConfig {
+  displayName: string | null;
+  enabled: boolean;
+}
+
 export interface WorkspaceConfig {
   root: string;
 }
@@ -73,6 +78,7 @@ export interface CodexConfig {
 
 export interface ServiceConfig {
   workflowPath: string;
+  project: ProjectConfig;
   tracker: TrackerConfig;
   polling: PollingConfig;
   workspace: WorkspaceConfig;
@@ -243,6 +249,7 @@ export interface OperatorEvent {
 
 export interface StatusProjectSummary {
   workflow_path: string;
+  display_name: string | null;
   poll_interval_ms: number;
   max_concurrent_agents: number;
   running_count: number;
@@ -314,4 +321,111 @@ export interface StatusSnapshot {
 export interface StatusSource {
   snapshot(): StatusSnapshot;
   subscribe(listener: (snapshot: StatusSnapshot) => void): () => void;
+}
+
+export interface DashboardSetupContext {
+  projectsRoot: string;
+  trackerKind: "linear";
+  repositoryProvider: "github";
+  globalConfig: GlobalConfigRecord;
+}
+
+export interface DashboardBootstrap {
+  initialSnapshot: StatusSnapshot;
+  setupContext: DashboardSetupContext;
+}
+
+export interface GlobalDefaults {
+  pollingIntervalMs: number;
+  maxConcurrentAgents: number;
+}
+
+export interface GlobalConfigRecord {
+  projectsRoot: string;
+  envFilePath: string;
+  defaults: GlobalDefaults;
+  hasLinearApiKey: boolean;
+  hasGithubToken: boolean;
+}
+
+export interface GlobalConfigInput {
+  pollingIntervalMs?: number | null;
+  maxConcurrentAgents?: number | null;
+  linearApiKey?: string | null;
+  githubToken?: string | null;
+  clearLinearApiKey?: boolean;
+  clearGithubToken?: boolean;
+}
+
+export interface ProjectSetupInput {
+  displayName?: string | null;
+  projectSlug: string;
+  linearApiKey?: string | null;
+  githubRepository: string;
+  githubToken?: string | null;
+  pollingIntervalMs?: number | null;
+  maxConcurrentAgents?: number | null;
+  useGlobalLinearApiKey?: boolean;
+  useGlobalGithubToken?: boolean;
+  useGlobalPollingIntervalMs?: boolean;
+  useGlobalMaxConcurrentAgents?: boolean;
+}
+
+export interface ProjectSetupResult {
+  id: string;
+  displayName: string | null;
+  enabled: boolean;
+  runtimeRunning: boolean;
+  projectSlug: string;
+  githubRepository: string;
+  workflowDirectory: string;
+  workflowPath: string;
+  envFilePath: string;
+  pollingIntervalMs: number;
+  maxConcurrentAgents: number;
+  hasLinearApiKey: boolean;
+  hasGithubToken: boolean;
+  usesGlobalLinearApiKey: boolean;
+  usesGlobalGithubToken: boolean;
+  usesGlobalPollingIntervalMs: boolean;
+  usesGlobalMaxConcurrentAgents: boolean;
+}
+
+export interface ProjectUpdateInput {
+  id: string;
+  displayName?: string | null;
+  projectSlug: string;
+  githubRepository: string;
+  linearApiKey?: string | null;
+  githubToken?: string | null;
+  pollingIntervalMs?: number | null;
+  maxConcurrentAgents?: number | null;
+  useGlobalLinearApiKey?: boolean;
+  useGlobalGithubToken?: boolean;
+  useGlobalPollingIntervalMs?: boolean;
+  useGlobalMaxConcurrentAgents?: boolean;
+}
+
+export interface ProjectRuntimeControlInput {
+  id: string;
+}
+
+export interface ManagedProjectRecord {
+  id: string;
+  displayName: string | null;
+  enabled: boolean;
+  runtimeRunning: boolean;
+  projectSlug: string;
+  githubRepository: string | null;
+  workflowDirectory: string;
+  workflowPath: string;
+  envFilePath: string;
+  pollingIntervalMs: number;
+  maxConcurrentAgents: number;
+  hasLinearApiKey: boolean;
+  hasGithubToken: boolean;
+  usesGlobalLinearApiKey: boolean;
+  usesGlobalGithubToken: boolean;
+  usesGlobalPollingIntervalMs: boolean;
+  usesGlobalMaxConcurrentAgents: boolean;
 }

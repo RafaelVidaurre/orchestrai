@@ -41,6 +41,7 @@ describe("buildServiceConfig", () => {
 
     expect(config.tracker.apiKey).toBe("linear-token");
     expect(config.tracker.projectSlug).toBe("project-alpha");
+    expect(config.project.enabled).toBe(true);
     expect(config.workspace.root).toBe(path.resolve("/tmp/project-alpha-workspaces"));
     expect(config.agent.maxConcurrentAgentsByState).toEqual({
       todo: 1,
@@ -94,5 +95,24 @@ describe("buildServiceConfig", () => {
 
     const config = buildServiceConfig("/tmp/workflow.md", workflow, {});
     expect(config.tracker.activeStates).toContain("Human Review");
+  });
+
+  it("respects project.enabled when explicitly disabled", () => {
+    const workflow: WorkflowDefinition = {
+      config: {
+        project: {
+          enabled: false
+        },
+        tracker: {
+          kind: "linear",
+          api_key: "token",
+          project_slug: "project-alpha"
+        }
+      },
+      prompt_template: "hello"
+    };
+
+    const config = buildServiceConfig("/tmp/workflow.md", workflow, {});
+    expect(config.project.enabled).toBe(false);
   });
 });

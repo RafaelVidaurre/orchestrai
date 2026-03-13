@@ -136,6 +136,7 @@ export class Orchestrator {
       projects: [
         {
           workflow_path: workflow.config.workflowPath,
+          display_name: workflow.config.project.displayName,
           poll_interval_ms: workflow.config.polling.intervalMs,
           max_concurrent_agents: workflow.config.agent.maxConcurrentAgents,
           running_count: this.running.size,
@@ -152,7 +153,7 @@ export class Orchestrator {
       running: [...this.running.values()].map((entry) => ({
         workflow_path: workflow.config.workflowPath,
         project_slug: project.slug,
-        project_name: project.name,
+        project_name: workflow.config.project.displayName ?? project.name,
         project_url: project.url,
         issue_id: entry.issue.id,
         identifier: entry.identifier,
@@ -179,7 +180,7 @@ export class Orchestrator {
       retries: [...this.retryAttempts.values()].map((entry) => ({
         workflow_path: workflow.config.workflowPath,
         project_slug: project.slug,
-        project_name: project.name,
+        project_name: workflow.config.project.displayName ?? project.name,
         project_url: project.url,
         issue_id: entry.issueId,
         identifier: entry.identifier,

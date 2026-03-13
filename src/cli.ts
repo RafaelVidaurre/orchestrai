@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 
+import { AppController } from "./app-controller";
+import { loadEnvFiles } from "./env";
 import { createRootLoggerFromEnv } from "./logger";
-import { RuntimeManager } from "./runtime";
-import { StatusServer } from "./status-server";
-import { resolveWorkflowPaths } from "./workflow";
+import { resolveWorkflowContext } from "./workflow";
 
 async function main(): Promise<void> {
   const logger = createRootLoggerFromEnv();
-  const workflowPaths = await resolveWorkflowPaths(process.argv[2]);
-  const runtime = new RuntimeManager(workflowPaths, logger);
+  const workflowContext = await resolveWorkflowContext(process.argv[2], { allowEmpty: true });
+  const env = { ...process.env };
+  await loadEnvFiles(workflowContext.projectsRoot, env, logger.child({ component: "global-env" }));
+  const app = new AppController(workflowContext, logger, env);
 
-  let statusServer: StatusServer | null = null;
   const stop = async () => {
-    await statusServer?.stop().catch(() => undefined);
-    await runtime.stop();
+    await app.stop().catch(() => undefined);
     process.exit(0);
   };
 
@@ -24,12 +24,7 @@ async function main(): Promise<void> {
     void stop();
   });
 
-  await runtime.start();
-  const dashboardConfig = runtime.dashboardConfig();
-  if (dashboardConfig) {
-    statusServer = new StatusServer(runtime, logger.child({ component: "status-server" }));
-    await statusServer.start(dashboardConfig.port, dashboardConfig.host);
-  }
+  await app.start({ runtime: true, dashboard: true });
   await new Promise(() => undefined);
 }
 

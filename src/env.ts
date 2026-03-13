@@ -8,10 +8,19 @@ import { Logger } from "./logger";
 export async function loadWorkflowEnv(
   baseDir: string,
   baseEnv: NodeJS.ProcessEnv = process.env,
-  logger?: Logger
+  logger?: Logger,
+  sharedDir?: string | null
 ): Promise<NodeJS.ProcessEnv> {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
-  await loadEnvFiles(baseDir, env, logger);
+  const protectedKeys = new Set(Object.keys(env));
+
+  if (sharedDir) {
+    await applyEnvFile(path.join(sharedDir, ".env"), env, protectedKeys, logger);
+    await applyEnvFile(path.join(sharedDir, ".env.local"), env, protectedKeys, logger);
+  }
+
+  await applyEnvFile(path.join(baseDir, ".env"), env, protectedKeys, logger);
+  await applyEnvFile(path.join(baseDir, ".env.local"), env, protectedKeys, logger);
   return env;
 }
 

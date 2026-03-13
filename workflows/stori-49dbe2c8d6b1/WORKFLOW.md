@@ -18,9 +18,15 @@ polling:
 workspace:
   root: .orchestrai/workspaces
 hooks:
-  timeout_ms: 60000
-  after_create: |
-    git clone "$REPO_URL" repo
+  timeout_ms: "60000"
+  after_create: >
+    set -euo pipefail
+
+    if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+      git clone "https://${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo
+    else
+      git clone "git@github.com:${GITHUB_REPOSITORY}.git" repo || git clone "https://github.com/${GITHUB_REPOSITORY}.git" repo
+    fi
 agent:
   max_concurrent_agents: 10
   max_turns: 20
@@ -30,8 +36,10 @@ codex:
   approval_policy: never
   thread_sandbox: workspace-write
 server:
-  port: -1
-  host: 127.0.0.1
+  port: "-1"
+project:
+  enabled: true
+  name: Stori
 ---
 You are working on a Linear issue.
 

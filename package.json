@@ -1,7 +1,7 @@
 {
-  "name": "symphony-orchestrator",
+  "name": "orchestrai",
   "version": "0.1.0",
-  "description": "A TypeScript Symphony service implementation for multi-project repository orchestration.",
+  "description": "A TypeScript OrchestrAI service for multi-project repository orchestration.",
   "private": true,
   "license": "UNLICENSED",
   "packageManager": "yarn@3.4.1",
@@ -9,18 +9,21 @@
     "node": "22.x"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/build-dashboard.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/build-dashboard.mjs && node scripts/build-tui.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "dashboard:build": "node scripts/build-dashboard.mjs",
     "dev": "node scripts/build-dashboard.mjs && tsx src/cli.ts",
     "start": "node dist/cli.js",
+    "tui": "node scripts/build-dashboard.mjs && node scripts/build-tui.mjs && node dist/tui.mjs",
     "test": "vitest run"
   },
   "dependencies": {
-    "@json-render/core": "^0.13.0",
-    "@json-render/react": "^0.13.0",
+    "@radix-ui/react-dialog": "^1.1.15",
+    "@radix-ui/react-tabs": "^1.1.13",
     "dotenv": "^17.2.3",
+    "ink": "^6.8.0",
     "liquidjs": "^10.18.0",
+    "lucide-react": "^0.577.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "yaml": "^2.8.1",

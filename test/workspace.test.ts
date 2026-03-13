@@ -52,6 +52,10 @@ describe("WorkspaceManager", () => {
 function configFixture(root: string, hookOverrides?: { afterCreate?: string | null }): ServiceConfig {
   return {
     workflowPath: "/tmp/WORKFLOW.md",
+    project: {
+      displayName: null,
+      enabled: true
+    },
     tracker: {
       kind: "linear",
       endpoint: "https://api.linear.app/graphql",

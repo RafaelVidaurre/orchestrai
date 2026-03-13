@@ -99,7 +99,7 @@ export class LinearIssueTrackerClient implements IssueTrackerClient {
       };
     }>(
       `
-        query SymphonyFetchIssueStates($ids: [ID!]) {
+        query OrchestrAIFetchIssueStates($ids: [ID!]) {
           issues(filter: { id: { in: $ids } }) {
             nodes {
               id
@@ -156,7 +156,7 @@ export class LinearIssueTrackerClient implements IssueTrackerClient {
         };
       }>(
         `
-          query SymphonyFetchProject($projectSlug: String!) {
+          query OrchestrAIFetchProject($projectSlug: String!) {
             projects(filter: { slugId: { eq: $projectSlug } }, first: 1) {
               nodes {
                 name
@@ -185,7 +185,7 @@ export class LinearIssueTrackerClient implements IssueTrackerClient {
       };
     }>(
       `
-        query SymphonyFetchProjectFallback($projectSlug: String!) {
+        query OrchestrAIFetchProjectFallback($projectSlug: String!) {
           projects(filter: { slugId: { eq: $projectSlug } }, first: 1) {
             nodes {
               name
@@ -209,7 +209,7 @@ export class LinearIssueTrackerClient implements IssueTrackerClient {
     while (true) {
       const data: IssuesConnection = await this.request<IssuesConnection>(
         `
-          query SymphonyFetchIssues($projectSlug: String!, $states: [String!], $after: String, $first: Int) {
+          query OrchestrAIFetchIssues($projectSlug: String!, $states: [String!], $after: String, $first: Int) {
             issues(
               filter: {
                 project: { slugId: { eq: $projectSlug } }

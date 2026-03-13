@@ -18,6 +18,12 @@ const liquid = new Liquid({
 const DEFAULT_WORKFLOW_FILE = "WORKFLOW.md";
 const DEFAULT_WORKFLOWS_DIR = "workflows";
 
+export interface WorkflowContext {
+  targetPath: string;
+  workflowPaths: string[];
+  projectsRoot: string;
+}
+
 export class WorkflowManager {
   private current: LoadedWorkflow | null = null;
   private dirty = true;
@@ -90,22 +96,54 @@ export class WorkflowManager {
 }
 
 export async function resolveWorkflowPaths(candidate?: string): Promise<string[]> {
+  const context = await resolveWorkflowContext(candidate);
+  return context.workflowPaths;
+}
+
+export async function resolveWorkflowContext(
+  candidate?: string,
+  options: {
+    allowEmpty?: boolean;
+  } = {}
+): Promise<WorkflowContext> {
   const targetPath = candidate ? path.resolve(candidate) : await resolveDefaultWorkflowTarget(process.cwd());
+  const allowEmpty = options.allowEmpty ?? false;
+
   const targetStat = await stat(targetPath).catch((error) => {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT" && allowEmpty) {
+      return null;
+    }
+
     throw mapWorkflowError(error, targetPath);
   });
 
+  if (!targetStat) {
+    return {
+      targetPath,
+      workflowPaths: [],
+      projectsRoot: inferProjectsRoot(targetPath)
+    };
+  }
+
   if (targetStat.isDirectory()) {
     const workflows = await discoverWorkflowFiles(targetPath);
-    if (workflows.length === 0) {
+    if (workflows.length === 0 && !allowEmpty) {
       throw new ServiceError("missing_workflow_file", "No workflow files could be found", {
         workflow_path: targetPath
       });
     }
-    return workflows;
+    return {
+      targetPath,
+      workflowPaths: workflows,
+      projectsRoot: targetPath
+    };
   }
 
-  return [targetPath];
+  return {
+    targetPath,
+    workflowPaths: [targetPath],
+    projectsRoot: inferProjectsRoot(targetPath)
+  };
 }
 
 export function parseWorkflowFile(content: string): WorkflowDefinition {
@@ -217,4 +255,12 @@ async function discoverWorkflowFiles(root: string): Promise<string[]> {
 
 function isWorkflowFilename(fileName: string): boolean {
   return fileName === DEFAULT_WORKFLOW_FILE || fileName.endsWith(".workflow.md");
+}
+
+function inferProjectsRoot(targetPath: string): string {
+  if (targetPath.endsWith(".md")) {
+    return path.join(path.dirname(targetPath), DEFAULT_WORKFLOWS_DIR);
+  }
+
+  return targetPath;
 }

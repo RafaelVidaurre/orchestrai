@@ -15,6 +15,7 @@ export function buildServiceConfig(
 ): ServiceConfig {
   const root = asObject(workflow.config);
   const tracker = asObject(root.tracker);
+  const project = asObject(root.project);
   const polling = asObject(root.polling);
   const workspace = asObject(root.workspace);
   const hooks = asObject(root.hooks);
@@ -31,6 +32,10 @@ export function buildServiceConfig(
 
   return {
     workflowPath,
+    project: {
+      displayName: coerceOptionalString(project.name),
+      enabled: coerceBoolean(project.enabled, true)
+    },
     tracker: {
       kind: (typeof tracker.kind === "string" ? tracker.kind : "linear") as "linear",
       endpoint: typeof tracker.endpoint === "string" && tracker.endpoint.length > 0 ? tracker.endpoint : DEFAULT_LINEAR_ENDPOINT,
@@ -40,7 +45,10 @@ export function buildServiceConfig(
       terminalStates: coerceStringArray(tracker.terminal_states, DEFAULT_TERMINAL_STATES)
     },
     polling: {
-      intervalMs: coerceInteger(polling.interval_ms, 30000)
+      intervalMs: coerceInteger(
+        polling.interval_ms,
+        coerceInteger(env.ORCHESTRAI_DEFAULT_POLLING_INTERVAL_MS, 30000)
+      )
     },
     workspace: {
       root: expandPathLikeValue(workspaceRootValue, env)
@@ -53,7 +61,10 @@ export function buildServiceConfig(
       timeoutMs: coercePositiveInteger(hooks.timeout_ms, 60000)
     },
     agent: {
-      maxConcurrentAgents: coercePositiveInteger(agent.max_concurrent_agents, 10),
+      maxConcurrentAgents: coercePositiveInteger(
+        agent.max_concurrent_agents,
+        coercePositiveInteger(env.ORCHESTRAI_DEFAULT_MAX_CONCURRENT_AGENTS, 10)
+      ),
       maxRetryBackoffMs: coercePositiveInteger(agent.max_retry_backoff_ms, 300000),
       maxConcurrentAgentsByState: coerceStateLimitMap(agent.max_concurrent_agents_by_state),
       maxTurns: coercePositiveInteger(agent.max_turns, 20)
@@ -137,6 +148,23 @@ function coerceStringArray(value: unknown, fallback: string[]): string[] {
 
 function coerceOptionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function coerceBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    if (value === "true") {
+      return true;
+    }
+    if (value === "false") {
+      return false;
+    }
+  }
+
+  return fallback;
 }
 
 function coerceStateLimitMap(value: unknown): Record<string, number> {

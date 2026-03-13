@@ -6,11 +6,13 @@ type LogFormat = "pretty" | "json";
 interface LoggerOptions {
   minimumLevel?: LogLevel;
   format?: LogFormat;
+  writeToStreams?: boolean;
 }
 
 export class Logger {
   private readonly minimumLevel: LogLevel;
   private readonly format: LogFormat;
+  private readonly writeToStreams: boolean;
 
   constructor(
     private readonly bindings: Record<string, unknown> = {},
@@ -18,6 +20,7 @@ export class Logger {
   ) {
     this.minimumLevel = options.minimumLevel ?? "info";
     this.format = options.format ?? "pretty";
+    this.writeToStreams = options.writeToStreams ?? true;
   }
 
   child(bindings: Record<string, unknown>): Logger {
@@ -25,7 +28,8 @@ export class Logger {
       { ...this.bindings, ...bindings },
       {
         minimumLevel: this.minimumLevel,
-        format: this.format
+        format: this.format,
+        writeToStreams: this.writeToStreams
       }
     );
   }
@@ -67,6 +71,10 @@ export class Logger {
     };
 
     const stream = level === "warn" || level === "error" ? process.stderr : process.stdout;
+    if (!this.writeToStreams) {
+      return;
+    }
+
     if (this.format === "json") {
       stream.write(`${JSON.stringify(payload)}\n`);
       return;

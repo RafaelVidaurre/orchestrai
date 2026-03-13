@@ -81,7 +81,7 @@ export class CodexAppServerSession {
     try {
       await this.request("initialize", {
         clientInfo: {
-          name: "symphony",
+          name: "orchestrai",
           version: "0.1.0"
         },
         capabilities: {
