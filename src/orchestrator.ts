@@ -2,6 +2,7 @@ import path from "node:path";
 
 import type {
   AgentActivityEntry,
+  AgentTranscriptEntry,
   CodexRuntimeEvent,
   Issue,
   LinearProjectInfo,
@@ -30,10 +31,19 @@ import {
 } from "./utils";
 import { WorkflowManager } from "./workflow";
 import { WorkspaceManager } from "./workspace";
+import {
+  classifyHumanizedCodexMessage,
+  isNarrativeTranscriptKind,
+  normalizeTranscriptMessage,
+  stitchTranscriptMessages,
+  shouldCaptureHumanizedCodexTranscript,
+  shouldRecordHumanizedCodexNotification
+} from "./codex-humanize";
 
 export class Orchestrator {
   private static readonly MAX_RECENT_EVENTS = 80;
   private static readonly MAX_AGENT_ACTIVITY = 12;
+  private static readonly MAX_AGENT_TRANSCRIPT = 120;
 
   private readonly logger: Logger;
   private readonly workflowManager: WorkflowManager;
@@ -178,7 +188,8 @@ export class Orchestrator {
         codex_output_tokens: entry.codexOutputTokens,
         codex_total_tokens: entry.codexTotalTokens,
         issue_url: entry.issue.url,
-        recent_activity: [...entry.recentActivity]
+        recent_activity: [...entry.recentActivity],
+        transcript_activity: [...entry.transcriptActivity]
       })),
       retries: [...this.retryAttempts.values()].map((entry) => ({
         workflow_path: workflow.config.workflowPath,
@@ -301,6 +312,15 @@ export class Orchestrator {
           source: "system",
           phase: "queued",
           message: `Dispatched from ${issue.state}`
+        }
+      ],
+      transcriptActivity: [
+        {
+          timestamp: new Date().toISOString(),
+          source: "system",
+          phase: "queued",
+          kind: "system",
+          message: `Run queued from ${issue.state}`
         }
       ]
     };
@@ -567,6 +587,13 @@ export class Orchestrator {
         activity: event.message
       });
     }
+    this.appendTranscriptActivity(entry, {
+      timestamp: event.timestamp,
+      source: "worker",
+      phase: event.phase,
+      kind: "status",
+      message: event.message
+    });
     this.publishSnapshot();
   }
 
@@ -579,16 +606,28 @@ export class Orchestrator {
     if (entry.codexAppServerPid === null && event.codexAppServerPid !== null) {
       entry.codexAppServerPid = event.codexAppServerPid;
     }
+    const renderedMessage = humanizeCodexEvent(event);
     entry.lastCodexEvent = event.event;
-    entry.lastCodexMessage = event.message ?? event.event;
+    entry.lastCodexMessage = renderedMessage;
     entry.lastCodexTimestampMs = Date.parse(event.timestamp);
-    entry.activity = humanizeCodexEvent(event);
+    if (shouldSurfaceCodexEventAsPrimaryActivity(event, renderedMessage)) {
+      entry.activity = renderedMessage;
+    }
     if (shouldPersistCodexActivity(event)) {
       this.appendAgentActivity(entry, {
         timestamp: event.timestamp,
         source: "codex",
         phase: entry.phase,
-        message: humanizeCodexEvent(event)
+        message: renderedMessage
+      });
+    }
+    if (shouldPersistCodexTranscript(event)) {
+      this.appendTranscriptActivity(entry, {
+        timestamp: event.timestamp,
+        source: "codex",
+        phase: entry.phase,
+        kind: classifyCodexTranscriptKind(event, renderedMessage),
+        message: renderedMessage
       });
     }
     if (event.event === "session_started") {
@@ -623,12 +662,12 @@ export class Orchestrator {
 
     if (shouldRecordCodexEvent(event)) {
       this.recordEvent(
-        event.event === "turn_failed" || event.event === "turn_input_required" ? "warn" : "info",
-        `codex ${event.event}`,
+        event.event === "turn_failed" || event.event === "turn_input_required" || event.event === "tool_call_failed" ? "warn" : "info",
+        `codex ${renderedMessage}`,
         {
           issue_id: issueId,
           issue_identifier: entry.identifier,
-          message: event.message ?? null,
+          message: renderedMessage,
           session_id: event.sessionId ?? null
         }
       );
@@ -646,6 +685,43 @@ export class Orchestrator {
 
     entry.recentActivity.unshift(activity);
     entry.recentActivity.splice(Orchestrator.MAX_AGENT_ACTIVITY);
+  }
+
+  private appendTranscriptActivity(entry: RunningEntry, activity: AgentTranscriptEntry): void {
+    const normalizedMessage = normalizeTranscriptMessage(activity.kind, activity.message);
+    if (!normalizedMessage) {
+      return;
+    }
+
+    const normalizedActivity: AgentTranscriptEntry = {
+      ...activity,
+      message: normalizedMessage
+    };
+
+    const last = entry.transcriptActivity[0];
+    if (last && last.message === normalizedActivity.message && last.kind === normalizedActivity.kind && last.source === normalizedActivity.source) {
+      entry.transcriptActivity[0] = normalizedActivity;
+      return;
+    }
+
+    if (
+      last &&
+      last.source === normalizedActivity.source &&
+      isNarrativeTranscriptKind(last.kind) &&
+      isNarrativeTranscriptKind(normalizedActivity.kind)
+    ) {
+      entry.transcriptActivity[0] = {
+        ...last,
+        timestamp: normalizedActivity.timestamp,
+        phase: normalizedActivity.phase,
+        kind: "message",
+        message: stitchTranscriptMessages(last.message, normalizedActivity.message)
+      };
+      return;
+    }
+
+    entry.transcriptActivity.unshift(normalizedActivity);
+    entry.transcriptActivity.splice(Orchestrator.MAX_AGENT_TRANSCRIPT);
   }
 
   private shouldDispatchIssue(issue: Issue, config: ServiceConfig): boolean {
@@ -876,28 +952,90 @@ function nextAttemptFrom(entry: RunningEntry): number {
 }
 
 function shouldRecordCodexEvent(event: CodexRuntimeEvent): boolean {
+  if (event.event === "notification") {
+    return shouldRecordHumanizedCodexNotification(event.message);
+  }
+
   return [
     "session_started",
     "turn_completed",
     "turn_failed",
     "turn_cancelled",
     "turn_input_required",
+    "user_input_auto_answered",
+    "tool_call_completed",
+    "tool_call_failed",
     "startup_failed",
     "unsupported_tool_call"
   ].includes(event.event);
 }
 
 function shouldPersistCodexActivity(event: CodexRuntimeEvent): boolean {
+  if (event.event === "notification") {
+    return shouldRecordHumanizedCodexNotification(event.message);
+  }
+
   return [
     "session_started",
     "turn_completed",
     "turn_failed",
     "turn_cancelled",
     "turn_input_required",
+    "user_input_auto_answered",
     "approval_auto_approved",
+    "tool_call_completed",
+    "tool_call_failed",
     "startup_failed",
     "unsupported_tool_call"
   ].includes(event.event);
+}
+
+function shouldPersistCodexTranscript(event: CodexRuntimeEvent): boolean {
+  if (event.event === "notification") {
+    return shouldCaptureHumanizedCodexTranscript(event.message);
+  }
+
+  return [
+    "session_started",
+    "turn_completed",
+    "turn_failed",
+    "turn_cancelled",
+    "turn_input_required",
+    "user_input_auto_answered",
+    "approval_auto_approved",
+    "tool_call_completed",
+    "tool_call_failed",
+    "startup_failed",
+    "unsupported_tool_call"
+  ].includes(event.event);
+}
+
+function shouldSurfaceCodexEventAsPrimaryActivity(event: CodexRuntimeEvent, renderedMessage: string): boolean {
+  if (event.event === "notification") {
+    return shouldRecordHumanizedCodexNotification(renderedMessage);
+  }
+
+  return true;
+}
+
+function classifyCodexTranscriptKind(
+  event: CodexRuntimeEvent,
+  renderedMessage: string
+): AgentTranscriptEntry["kind"] {
+  switch (event.event) {
+    case "approval_auto_approved":
+      return "approval";
+    case "tool_call_completed":
+    case "tool_call_failed":
+    case "unsupported_tool_call":
+      return "tool";
+    case "notification":
+      return classifyHumanizedCodexMessage(renderedMessage);
+    case "startup_failed":
+      return "system";
+    default:
+      return "status";
+  }
 }
 
 function shouldRecordWorkerActivity(phase: WorkerActivityEvent["phase"]): boolean {
@@ -928,8 +1066,13 @@ function humanizeCodexEvent(event: CodexRuntimeEvent): string {
       return "Codex turn cancelled";
     case "turn_input_required":
       return "Codex requested input";
+    case "user_input_auto_answered":
+      return event.message ?? "Auto-answered user-input request";
     case "approval_auto_approved":
       return "Auto-approved agent request";
+    case "tool_call_completed":
+    case "tool_call_failed":
+      return event.message ?? event.event;
     case "unsupported_tool_call":
       return "Unsupported tool call requested";
     default:

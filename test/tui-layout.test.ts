@@ -49,7 +49,8 @@ describe("tui layout helpers", () => {
           phase: "streaming_turn",
           message: "Investigating runtime desync in the audio playback pipeline"
         }
-      ]
+      ],
+      transcript_activity: []
     };
 
     const lines = buildAgentTableLines([entry], 112, 65_000);

@@ -123,7 +123,10 @@ export interface CodexRuntimeEvent {
     | "turn_cancelled"
     | "turn_ended_with_error"
     | "turn_input_required"
+    | "user_input_auto_answered"
     | "approval_auto_approved"
+    | "tool_call_completed"
+    | "tool_call_failed"
     | "unsupported_tool_call"
     | "notification"
     | "other_message"
@@ -156,6 +159,14 @@ export interface AgentActivityEntry {
   timestamp: string;
   source: "worker" | "codex" | "system";
   phase: string | null;
+  message: string;
+}
+
+export interface AgentTranscriptEntry {
+  timestamp: string;
+  source: "worker" | "codex" | "system";
+  phase: string | null;
+  kind: "status" | "message" | "reasoning" | "command" | "tool" | "approval" | "system";
   message: string;
 }
 
@@ -211,6 +222,7 @@ export interface RunningEntry {
   phase: WorkerActivityEvent["phase"] | "queued";
   activity: string;
   recentActivity: AgentActivityEntry[];
+  transcriptActivity: AgentTranscriptEntry[];
 }
 
 export interface RuntimeTotals {
@@ -298,6 +310,7 @@ export interface StatusRunningEntry {
   codex_total_tokens: number;
   issue_url: string | null;
   recent_activity: AgentActivityEntry[];
+  transcript_activity: AgentTranscriptEntry[];
 }
 
 export interface StatusRetryEntry {

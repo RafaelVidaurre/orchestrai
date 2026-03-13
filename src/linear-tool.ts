@@ -2,6 +2,27 @@ import type { ServiceConfig } from "./domain";
 import { ServiceError } from "./errors";
 
 const LINEAR_TOOL_TIMEOUT_MS = 30000;
+export const LINEAR_GRAPHQL_TOOL_NAME = "linear_graphql";
+
+const LINEAR_GRAPHQL_TOOL_DESCRIPTION =
+  "Execute a raw GraphQL query or mutation against Linear using OrchestrAI's configured auth.";
+
+const LINEAR_GRAPHQL_INPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["query"],
+  properties: {
+    query: {
+      type: "string",
+      description: "GraphQL query or mutation document to execute against Linear."
+    },
+    variables: {
+      type: ["object", "null"],
+      description: "Optional GraphQL variables object.",
+      additionalProperties: true
+    }
+  }
+} as const;
 
 interface LinearToolRequest {
   query: string;
@@ -11,6 +32,14 @@ interface LinearToolRequest {
 export interface LinearToolResult {
   success: boolean;
   text: string;
+}
+
+export function linearGraphqlToolSpec(): Record<string, unknown> {
+  return {
+    name: LINEAR_GRAPHQL_TOOL_NAME,
+    description: LINEAR_GRAPHQL_TOOL_DESCRIPTION,
+    inputSchema: LINEAR_GRAPHQL_INPUT_SCHEMA
+  };
 }
 
 export async function executeLinearGraphqlTool(config: ServiceConfig, input: unknown): Promise<LinearToolResult> {
@@ -91,6 +120,18 @@ function parseLinearToolRequest(input: unknown): LinearToolRequest {
     query,
     variables: variables as Record<string, unknown> | undefined
   };
+}
+
+export function resolveDynamicToolName(params: Record<string, unknown>): string | null {
+  if (typeof params.name === "string" && params.name.trim().length > 0) {
+    return params.name.trim();
+  }
+
+  if (typeof params.tool === "string" && params.tool.trim().length > 0) {
+    return params.tool.trim();
+  }
+
+  return null;
 }
 
 function assertSingleOperation(query: string): void {

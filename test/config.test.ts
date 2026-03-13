@@ -115,12 +115,15 @@ describe("buildServiceConfig", () => {
     expect(config.codex.command).toBe(
       "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server"
     );
-    expect(config.codex.approvalPolicy).toBe("never");
-    expect(config.codex.threadSandbox).toBe("workspace-write");
-    expect(config.codex.turnSandboxPolicy).toEqual({
-      type: "workspaceWrite",
-      networkAccess: true
+    expect(config.codex.approvalPolicy).toEqual({
+      reject: {
+        sandbox_approval: true,
+        rules: true,
+        mcp_elicitations: true
+      }
     });
+    expect(config.codex.threadSandbox).toBe("workspace-write");
+    expect(config.codex.turnSandboxPolicy).toBeNull();
   });
 
   it("respects project.enabled when explicitly disabled", () => {

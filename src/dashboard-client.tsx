@@ -1,4 +1,5 @@
 import {
+  Fragment,
   startTransition,
   useEffect,
   useMemo,
@@ -29,6 +30,7 @@ import {
 } from "lucide-react";
 
 import type {
+  AgentTranscriptEntry,
   DashboardBootstrap,
   DashboardSetupContext,
   GlobalConfigRecord,
@@ -93,6 +95,7 @@ function DashboardApp() {
   const [createProjectFormState, setCreateProjectFormState] = useState<ProjectFormState>(() => emptyProjectForm());
   const [notice, setNotice] = useState<StatusNotice>(idleNotice());
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [selectedAgentIssueId, setSelectedAgentIssueId] = useState<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
 
   const effectiveSnapshot = snapshot ?? emptySnapshot();
@@ -111,10 +114,17 @@ function DashboardApp() {
   const activeAgents = useMemo(() => sortRunningEntries(selectedSnapshot.running), [selectedSnapshot.running]);
   const queuedRetries = useMemo(() => sortRetryEntries(selectedSnapshot.retries), [selectedSnapshot.retries]);
   const selectedProjectSummary = selectedProject ? summaries.get(selectedProject.workflowPath) ?? null : null;
-
   useEffect(() => {
     applyThemePreference(themePreference);
   }, [themePreference]);
+
+  useEffect(() => {
+    if (selectedAgentIssueId && activeAgents.some((entry) => entry.issue_id === selectedAgentIssueId)) {
+      return;
+    }
+
+    setSelectedAgentIssueId(activeAgents[0]?.issue_id ?? null);
+  }, [activeAgents, selectedAgentIssueId]);
 
   useEffect(() => {
     if (setupContext) {
@@ -405,9 +415,9 @@ function DashboardApp() {
           <Surface
             className="span-two"
             title="Active agents"
-            subtitle="Current ticket, runtime, and the latest meaningful progress signal."
+            subtitle="Current ticket, runtime, and the latest meaningful progress signal. Select a row to expand the live transcript inline."
           >
-            <AgentTable entries={activeAgents} nowMs={nowMs} />
+            <AgentTable entries={activeAgents} nowMs={nowMs} selectedIssueId={selectedAgentIssueId} onSelectIssueId={setSelectedAgentIssueId} />
           </Surface>
 
           <Surface title="What changed" subtitle="The newest orchestration events, without the raw internals.">
@@ -910,7 +920,12 @@ function Surface(props: { title: string; subtitle: string; className?: string; c
   );
 }
 
-function AgentTable(props: { entries: StatusRunningEntry[]; nowMs: number }) {
+function AgentTable(props: {
+  entries: StatusRunningEntry[];
+  nowMs: number;
+  selectedIssueId: string | null;
+  onSelectIssueId: (issueId: string) => void;
+}) {
   if (props.entries.length === 0) {
     return <EmptyState title="No active agents" body="When a ticket is picked up, it will appear here with its runtime and latest progress signal." />;
   }
@@ -930,23 +945,48 @@ function AgentTable(props: { entries: StatusRunningEntry[]; nowMs: number }) {
         <tbody>
           {props.entries.map((entry) => {
             const secondary = entry.recent_activity[1]?.message ?? `${entry.turn_count} turns completed`;
+            const selected = props.selectedIssueId === entry.issue_id;
+
             return (
-              <tr key={entry.issue_id}>
-                <td>
-                  <div className="row-title">{entry.identifier}</div>
-                  <div className="row-subtitle">{entry.title}</div>
-                </td>
-                <td>
-                  <span className="phase-badge">{humanizePhase(entry.phase)}</span>
-                  <div className="row-subtitle">{entry.state}</div>
-                </td>
-                <td className="mono">{formatElapsedShort(props.nowMs - entry.started_at_ms)}</td>
-                <td className="mono">{formatInteger(entry.codex_total_tokens)}</td>
-                <td>
-                  <div className="activity-primary">{entry.activity}</div>
-                  <div className="activity-secondary">{secondary}</div>
-                </td>
-              </tr>
+              <Fragment key={entry.issue_id}>
+                <tr className={joinClassName("agent-row", selected ? "selected" : null)}>
+                  <td>
+                    <button
+                      type="button"
+                      className={joinClassName("agent-row-button", selected ? "selected" : null)}
+                      aria-expanded={selected}
+                      onClick={() => {
+                        props.onSelectIssueId(entry.issue_id);
+                      }}
+                    >
+                      <span className={joinClassName("agent-row-chevron", selected ? "expanded" : null)}>
+                        <ChevronRight size={14} />
+                      </span>
+                      <span className="agent-row-copy">
+                        <span className="row-title">{entry.identifier}</span>
+                        <span className="row-subtitle">{entry.title}</span>
+                      </span>
+                    </button>
+                  </td>
+                  <td>
+                    <span className="phase-badge">{humanizePhase(entry.phase)}</span>
+                    <div className="row-subtitle">{entry.state}</div>
+                  </td>
+                  <td className="mono">{formatElapsedShort(props.nowMs - entry.started_at_ms)}</td>
+                  <td className="mono">{formatInteger(entry.codex_total_tokens)}</td>
+                  <td>
+                    <div className="activity-primary">{entry.activity}</div>
+                    <div className="activity-secondary">{secondary}</div>
+                  </td>
+                </tr>
+                {selected ? (
+                  <tr className="agent-detail-row">
+                    <td colSpan={5}>
+                      <AgentInlineTranscript entry={entry} nowMs={props.nowMs} />
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
             );
           })}
         </tbody>
@@ -970,11 +1010,59 @@ function EventTimeline(props: { events: StatusSnapshot["recent_events"] }) {
           </div>
           <div className="timeline-copy">
             <div className="row-title">{event.issueIdentifier ?? "runtime"}</div>
-            <div className="row-subtitle">{describeOperatorEvent(event)}</div>
+            <div className="row-subtitle summary-clamp">{describeOperatorEvent(event)}</div>
           </div>
         </div>
       ))}
     </div>
+  );
+}
+
+function AgentInlineTranscript(props: { entry: StatusRunningEntry; nowMs: number }) {
+  const { entry } = props;
+  return (
+    <div className="agent-detail-panel">
+      <div className="agent-detail-header">
+        <div>
+          <div className="agent-detail-kicker">Live transcript</div>
+          <div className="row-title">{entry.identifier}</div>
+          <div className="row-subtitle">{entry.title}</div>
+        </div>
+        <div className="agent-detail-meta">
+          <span className="phase-badge">{humanizePhase(entry.phase)}</span>
+          <span className="meta-chip">
+            <span>{formatInteger(entry.codex_total_tokens)} tokens</span>
+          </span>
+          <span className="meta-chip">
+            <span>{formatElapsedShort(props.nowMs - entry.started_at_ms)} running</span>
+          </span>
+        </div>
+      </div>
+
+      <div className="agent-detail-stream">
+        {entry.transcript_activity.length === 0 ? (
+          <EmptyState title="No transcript yet" body="This agent has not emitted detailed Codex activity yet." />
+        ) : (
+          entry.transcript_activity.slice(0, 80).map((transcriptEntry, index) => (
+            <TranscriptItem key={`${transcriptEntry.timestamp}:${transcriptEntry.kind}:${index}`} entry={transcriptEntry} />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TranscriptItem(props: { entry: AgentTranscriptEntry }) {
+  const tone = transcriptTone(props.entry);
+
+  return (
+    <article className={joinClassName("transcript-item", tone)}>
+      <div className="transcript-meta">
+        <span className={joinClassName("transcript-badge", tone)}>{transcriptLabel(props.entry)}</span>
+        <span className="timeline-time">{formatRelativeTime(props.entry.timestamp)}</span>
+      </div>
+      <div className={joinClassName("transcript-body", tone)}>{props.entry.message}</div>
+    </article>
   );
 }
 
@@ -1251,6 +1339,43 @@ function describeOperatorEvent(event: StatusSnapshot["recent_events"][number]): 
   }
 
   return event.message;
+}
+
+function transcriptLabel(entry: AgentTranscriptEntry): string {
+  switch (entry.kind) {
+    case "message":
+      return "Agent";
+    case "reasoning":
+      return "Reasoning";
+    case "command":
+      return "Command";
+    case "tool":
+      return "Tool";
+    case "approval":
+      return "Approval";
+    case "system":
+      return "System";
+    case "status":
+    default:
+      return "Status";
+  }
+}
+
+function transcriptTone(entry: AgentTranscriptEntry): "status" | "message" | "command" | "tool" {
+  switch (entry.kind) {
+    case "message":
+    case "reasoning":
+      return "message";
+    case "command":
+      return "command";
+    case "tool":
+    case "approval":
+      return "tool";
+    case "system":
+    case "status":
+    default:
+      return "status";
+  }
 }
 
 async function refreshSetupContext(

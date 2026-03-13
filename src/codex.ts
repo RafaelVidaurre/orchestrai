@@ -2,8 +2,15 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 
 import type { CodexRuntimeEvent, ServiceConfig } from "./domain";
+import { humanizeCodexMethod, humanizeDynamicToolEvent } from "./codex-humanize";
+import { buildAutoUserInputResult, summarizeUserInputRequest } from "./codex-user-input";
 import { ServiceError } from "./errors";
-import { executeLinearGraphqlTool } from "./linear-tool";
+import {
+  executeLinearGraphqlTool,
+  linearGraphqlToolSpec,
+  LINEAR_GRAPHQL_TOOL_NAME,
+  resolveDynamicToolName
+} from "./linear-tool";
 import { Logger } from "./logger";
 
 const MAX_STDOUT_LINE_BYTES = 10 * 1024 * 1024;
@@ -89,12 +96,13 @@ export class CodexAppServerSession {
         }
       });
       this.notify("initialized", {});
-      await this.ensureLinearMcpAvailable();
+      await this.inspectLinearMcpStatus();
 
       const threadStart = (await this.request("thread/start", {
         cwd: this.workspacePath,
         approvalPolicy: this.config.codex.approvalPolicy,
         sandbox: this.config.codex.threadSandbox,
+        dynamicTools: [linearGraphqlToolSpec()],
         experimentalRawEvents: false,
         persistExtendedHistory: false
       })) as { thread?: { id?: string } };
@@ -117,27 +125,36 @@ export class CodexAppServerSession {
     }
   }
 
-  private async ensureLinearMcpAvailable(): Promise<void> {
-    const response = (await this.request("mcpServerStatus/list", {
-      limit: 100
-    })) as { data?: Array<{ name?: string; authStatus?: string }> };
+  private async inspectLinearMcpStatus(): Promise<void> {
+    try {
+      const response = (await this.request("mcpServerStatus/list", {
+        limit: 100
+      })) as { data?: Array<{ name?: string; authStatus?: string }> };
 
-    const servers = response.data ?? [];
-    const linearServer = servers.find((server) => (server.name ?? "").toLowerCase().includes("linear"));
-    if (!linearServer) {
-      throw new ServiceError("missing_linear_mcp", "Linear MCP is required but no Linear MCP server is configured in Codex");
+      const servers = response.data ?? [];
+      const linearServer = servers.find((server) => (server.name ?? "").toLowerCase().includes("linear"));
+      if (!linearServer) {
+        this.emit("notification", {
+          message: "linear mcp unavailable; falling back to linear_graphql"
+        });
+        return;
+      }
+
+      if (!["bearerToken", "oAuth"].includes(linearServer.authStatus ?? "")) {
+        this.emit("notification", {
+          message: `linear mcp unavailable; falling back to linear_graphql (auth ${linearServer.authStatus ?? "unknown"})`
+        });
+        return;
+      }
+
+      this.emit("notification", {
+        message: `linear mcp ready (${linearServer.name})`
+      });
+    } catch (error) {
+      this.emit("notification", {
+        message: `linear mcp unavailable; falling back to linear_graphql (${error instanceof Error ? error.message : "status check failed"})`
+      });
     }
-
-    if (!["bearerToken", "oAuth"].includes(linearServer.authStatus ?? "")) {
-      throw new ServiceError(
-        "linear_mcp_not_ready",
-        `Linear MCP is present but not authenticated (status: ${linearServer.authStatus ?? "unknown"})`
-      );
-    }
-
-    this.emit("notification", {
-      message: `linear_mcp_ready:${linearServer.name}`
-    });
   }
 
   async runTurn(threadId: string, prompt: string): Promise<{ threadId: string; turnId: string }> {
@@ -280,7 +297,7 @@ export class CodexAppServerSession {
         const usage = params.tokenUsage as { total?: { inputTokens?: number; outputTokens?: number; totalTokens?: number } } | undefined;
         if (usage?.total) {
           this.emit("notification", {
-            message: method,
+            message: humanizeCodexMethod(method, message),
             threadId: asOptionalString(params.threadId),
             turnId: asOptionalString(params.turnId),
             usage: {
@@ -294,7 +311,7 @@ export class CodexAppServerSession {
       }
       case "account/rateLimits/updated": {
         this.emit("notification", {
-          message: method,
+          message: humanizeCodexMethod(method, message),
           rateLimits: params.rateLimits
         });
         return;
@@ -336,7 +353,7 @@ export class CodexAppServerSession {
       }
       default: {
         this.emit("notification", {
-          message: method,
+          message: humanizeCodexMethod(method, message),
           threadId: asOptionalString(params.threadId),
           turnId: asOptionalString(params.turnId)
         });
@@ -371,7 +388,7 @@ export class CodexAppServerSession {
     switch (method) {
       case "item/commandExecution/requestApproval":
         this.emit("approval_auto_approved", {
-          message: method
+          message: `${humanizeCodexMethod(method, message)} (auto-approved)`
         });
         this.send({
           id,
@@ -382,7 +399,7 @@ export class CodexAppServerSession {
         return;
       case "item/fileChange/requestApproval":
         this.emit("approval_auto_approved", {
-          message: method
+          message: `${humanizeCodexMethod(method, message)} (auto-approved)`
         });
         this.send({
           id,
@@ -394,7 +411,7 @@ export class CodexAppServerSession {
       case "applyPatchApproval":
       case "execCommandApproval":
         this.emit("approval_auto_approved", {
-          message: method
+          message: `${method} (auto-approved)`
         });
         this.send({
           id,
@@ -406,17 +423,30 @@ export class CodexAppServerSession {
       case "item/tool/requestUserInput": {
         const threadId = asOptionalString(params.threadId);
         const turnId = asOptionalString(params.turnId);
+        const autoResult = buildAutoUserInputResult(params, {
+          autoApproveRequests: this.config.codex.approvalPolicy === "never"
+        });
+        if (autoResult) {
+          this.emit(autoResult.kind, {
+            message: autoResult.summary,
+            threadId,
+            turnId,
+            sessionId: threadId && turnId ? `${threadId}-${turnId}` : undefined
+          });
+          this.send({
+            id,
+            result: {
+              answers: autoResult.answers
+            }
+          });
+          return;
+        }
+
         this.emit("turn_input_required", {
-          message: method,
+          message: summarizeUserInputRequest(params),
           threadId,
           turnId,
           sessionId: threadId && turnId ? `${threadId}-${turnId}` : undefined
-        });
-        this.send({
-          id,
-          result: {
-            answers: {}
-          }
         });
         if (threadId && turnId) {
           void this.request("turn/interrupt", { threadId, turnId }).catch(() => undefined);
@@ -424,6 +454,12 @@ export class CodexAppServerSession {
         if (this.currentTurn) {
           this.currentTurn.reject(new ServiceError("turn_input_required", "Codex requested user input"));
         }
+        this.send({
+          id,
+          result: {
+            answers: {}
+          }
+        });
         return;
       }
       case "mcpServer/elicitation/request":
@@ -455,15 +491,19 @@ export class CodexAppServerSession {
   }
 
   private async handleDynamicToolCall(id: number | string, params: Record<string, unknown>): Promise<void> {
-    const tool = String(params.tool ?? "unknown");
+    const tool = resolveDynamicToolName(params) ?? "unknown";
+    this.emit("notification", {
+      message: humanizeCodexMethod("item/tool/call", { method: "item/tool/call", params })
+    });
 
-    if (tool === "linear_graphql") {
+    if (tool === LINEAR_GRAPHQL_TOOL_NAME) {
       try {
         const result = await executeLinearGraphqlTool(this.config, params.arguments);
         this.send({
           id,
           result: {
             success: result.success,
+            output: result.text,
             contentItems: [
               {
                 type: "inputText",
@@ -472,18 +512,30 @@ export class CodexAppServerSession {
             ]
           }
         });
+        this.emit(result.success ? "tool_call_completed" : "tool_call_failed", {
+          message: humanizeDynamicToolEvent(result.success ? "dynamic tool call completed" : "dynamic tool call failed", tool)
+        });
       } catch (error) {
         this.send({
           id,
           result: {
             success: false,
+            output: JSON.stringify(
+              {
+                error: {
+                  message: error instanceof Error ? error.message : `${LINEAR_GRAPHQL_TOOL_NAME} failed`
+                }
+              },
+              null,
+              2
+            ),
             contentItems: [
               {
                 type: "inputText",
                 text: JSON.stringify(
                   {
                     success: false,
-                    error: error instanceof Error ? error.message : "linear_graphql failed"
+                    error: error instanceof Error ? error.message : `${LINEAR_GRAPHQL_TOOL_NAME} failed`
                   },
                   null,
                   2
@@ -492,21 +544,44 @@ export class CodexAppServerSession {
             ]
           }
         });
+        this.emit("tool_call_failed", {
+          message: humanizeDynamicToolEvent("dynamic tool call failed", tool)
+        });
       }
       return;
     }
 
     this.emit("unsupported_tool_call", {
-      message: tool
+      message: humanizeDynamicToolEvent("unsupported dynamic tool call rejected", tool)
     });
     this.send({
       id,
       result: {
         success: false,
+        output: JSON.stringify(
+          {
+            error: {
+              message: `Unsupported dynamic tool: ${JSON.stringify(tool)}.`,
+              supportedTools: [LINEAR_GRAPHQL_TOOL_NAME]
+            }
+          },
+          null,
+          2
+        ),
         contentItems: [
           {
             type: "inputText",
-            text: "unsupported_tool_call"
+            text: JSON.stringify(
+              {
+                success: false,
+                error: {
+                  message: `Unsupported dynamic tool: ${JSON.stringify(tool)}.`,
+                  supportedTools: [LINEAR_GRAPHQL_TOOL_NAME]
+                }
+              },
+              null,
+              2
+            )
           }
         ]
       }

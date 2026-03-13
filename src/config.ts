@@ -9,9 +9,12 @@ const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"];
 const DEFAULT_TERMINAL_STATES = ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"];
 const DEFAULT_CODEX_COMMAND =
   "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server";
-const DEFAULT_TURN_SANDBOX_POLICY = {
-  type: "workspaceWrite",
-  networkAccess: true
+const DEFAULT_APPROVAL_POLICY = {
+  reject: {
+    sandbox_approval: true,
+    rules: true,
+    mcp_elicitations: true
+  }
 } as const;
 
 export function buildServiceConfig(
@@ -78,9 +81,9 @@ export function buildServiceConfig(
     codex: {
       command:
         typeof codex.command === "string" && codex.command.trim().length > 0 ? codex.command.trim() : DEFAULT_CODEX_COMMAND,
-      approvalPolicy: codex.approval_policy ?? "never",
+      approvalPolicy: codex.approval_policy ?? DEFAULT_APPROVAL_POLICY,
       threadSandbox: codex.thread_sandbox ?? "workspace-write",
-      turnSandboxPolicy: codex.turn_sandbox_policy ?? DEFAULT_TURN_SANDBOX_POLICY,
+      turnSandboxPolicy: codex.turn_sandbox_policy ?? null,
       turnTimeoutMs: coercePositiveInteger(codex.turn_timeout_ms, 3600000),
       readTimeoutMs: coercePositiveInteger(codex.read_timeout_ms, 5000),
       stallTimeoutMs: coerceInteger(codex.stall_timeout_ms, 300000)

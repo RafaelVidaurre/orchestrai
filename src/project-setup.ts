@@ -1,8 +1,8 @@
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 
-import { parse } from "dotenv";
-import YAML from "yaml";
+import { parse } from 'dotenv';
+import YAML from 'yaml';
 
 import type {
   DashboardSetupContext,
@@ -11,12 +11,12 @@ import type {
   ProjectSetupInput,
   ProjectSetupResult,
   ProjectUpdateInput,
-  WorkflowDefinition
-} from "./domain";
-import { ServiceError } from "./errors";
-import { loadWorkflowEnv } from "./env";
-import { readGlobalConfig } from "./global-config";
-import { parseWorkflowFile } from "./workflow";
+  WorkflowDefinition,
+} from './domain';
+import { ServiceError } from './errors';
+import { loadWorkflowEnv } from './env';
+import { readGlobalConfig } from './global-config';
+import { parseWorkflowFile } from './workflow';
 
 const DEFAULT_PROJECT_PROMPT = `You are working on a Linear ticket \`{{ issue.identifier }}\`
 
@@ -46,8 +46,9 @@ No description provided.
 Instructions:
 
 1. This is an unattended orchestration session. Never ask a human to perform follow-up actions.
-2. Only stop early for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to workflow.
-3. Final message must report completed actions and blockers only. Do not include "next steps for user".
+2. Never call \`request_user_input\` or any equivalent human-input tool. Make the safest reasonable assumption, continue autonomously, and record blockers in the workpad when required.
+3. Only stop early for a true blocker (missing required auth/permissions/secrets). If blocked, record it in the workpad and move the issue according to workflow.
+4. Final message must report completed actions and blockers only. Do not include "next steps for user".
 
 Work only in the provided repository copy. Do not touch any other path.
 
@@ -80,7 +81,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
 - \`linear\`: interact with Linear.
 - \`commit\`: produce clean, logical commits during implementation.
 - \`push\`: keep remote branch current and publish updates.
-- \`pull\`: keep branch updated with latest \`origin/master\` before handoff.
+- \`pull\`: keep branch updated with latest \`origin/main\` before handoff.
 - \`land\`: when ticket reaches \`Merging\`, explicitly open and follow \`.codex/skills/land/SKILL.md\`, which includes the \`land\` loop.
 
 ## Status map
@@ -109,7 +110,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - \`Done\` -> do nothing and shut down.
 4. Check whether a PR already exists for the current branch and whether it is closed.
    - If a branch PR exists and is \`CLOSED\` or \`MERGED\`, treat prior branch work as non-reusable for this run.
-   - Create a fresh branch from \`origin/master\` and restart execution flow as a new attempt.
+   - Create a fresh branch from \`origin/main\` and restart execution flow as a new attempt.
 5. For \`Todo\` tickets, do startup sequencing in this exact order:
    - \`update_issue(..., state: "In Progress")\`
    - find/create \`## Codex Workpad\` bootstrap comment
@@ -140,7 +141,7 @@ The agent should be able to talk to Linear, either via a configured Linear MCP s
    - If the ticket description/comment context includes \`Validation\`, \`Test Plan\`, or \`Testing\` sections, copy those requirements into the workpad \`Acceptance Criteria\` and \`Validation\` sections as required checkboxes (no optional downgrade).
 7. Run a principal-style self-review of the plan and refine it in the comment.
 8. Before implementing, capture a concrete reproduction signal and record it in the workpad \`Notes\` section (command/output, screenshot, or deterministic UI behavior).
-9. Run the \`pull\` skill to sync with latest \`origin/master\` before any code edits, then record the pull/sync result in the workpad \`Notes\`.
+9. Run the \`pull\` skill to sync with latest \`origin/main\` before any code edits, then record the pull/sync result in the workpad \`Notes\`.
    - Include a \`pull skill evidence\` note with:
      - merge source(s),
      - result (\`clean\` or \`conflicts resolved\`),
@@ -199,7 +200,7 @@ Use this only when completion is blocked by missing required tools or missing au
 7. Before every \`git push\` attempt, run the required validation for your scope and confirm it passes; if it fails, address issues and rerun until green, then commit and push changes.
 8. Attach PR URL to the issue (prefer attachment; use the workpad comment only if attachment is unavailable).
    - Ensure the GitHub PR has label \`symphony\` (add it if missing).
-9. Merge latest \`origin/master\` into branch, resolve conflicts, and rerun checks.
+9. Merge latest \`origin/main\` into branch, resolve conflicts, and rerun checks.
 10. Update the workpad comment with final checklist status and validation notes.
     - Mark completed plan/acceptance/validation checklist items as checked.
     - Add final handoff notes (commit + validation summary) in the same workpad comment.
@@ -235,7 +236,7 @@ Use this only when completion is blocked by missing required tools or missing au
 2. Re-read the full issue body and all human comments; explicitly identify what will be done differently this attempt.
 3. Close the existing PR tied to the issue.
 4. Remove the existing \`## Codex Workpad\` comment from the issue.
-5. Create a fresh branch from \`origin/master\`.
+5. Create a fresh branch from \`origin/main\`.
 6. Start over from the normal kickoff flow:
    - If current issue state is \`Todo\`, move it to \`In Progress\`; otherwise keep the current state.
    - Create a new bootstrap \`## Codex Workpad\` comment.
@@ -254,7 +255,7 @@ Use this only when completion is blocked by missing required tools or missing au
 ## Guardrails
 
 - If the branch PR is already closed/merged, do not reuse that branch or prior implementation state for continuation.
-- For closed/merged branch PRs, create a new branch from \`origin/master\` and restart from reproduction/planning as if starting fresh.
+- For closed/merged branch PRs, create a new branch from \`origin/main\` and restart from reproduction/planning as if starting fresh.
 - If issue state is \`Backlog\`, do not modify it; wait for human to move to \`Todo\`.
 - Do not edit the issue body/description for planning or progress tracking.
 - Use exactly one persistent workpad comment (\`## Codex Workpad\`) per issue.
@@ -308,7 +309,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 \`\`\`\``;
 
 const DEFAULT_CODEX_COMMAND =
-  "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server";
+  'codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server';
 
 const DEFAULT_POLL_INTERVAL_MS = 30000;
 const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
@@ -323,39 +324,39 @@ type ProjectSecrets = {
 export async function createProjectSetup(
   projectsRoot: string,
   input: ProjectSetupInput,
-  baseEnv: NodeJS.ProcessEnv = process.env
+  baseEnv: NodeJS.ProcessEnv = process.env,
 ): Promise<ProjectSetupResult> {
   const globalConfig = await readGlobalConfig(projectsRoot, baseEnv);
   const normalized = normalizeProjectSetupInput(input, globalConfig);
   const workflowDirectory = path.resolve(projectsRoot, sanitizeProjectDirectory(normalized.projectSlug));
-  const workflowPath = path.join(workflowDirectory, "WORKFLOW.md");
-  const envFilePath = path.join(workflowDirectory, ".env.local");
+  const workflowPath = path.join(workflowDirectory, 'WORKFLOW.md');
+  const envFilePath = path.join(workflowDirectory, '.env.local');
 
   await ensureProjectDirectoryAvailable(workflowDirectory);
   await mkdir(workflowDirectory, { recursive: true });
 
-  await writeFile(workflowPath, renderWorkflowMarkdown(normalized), "utf8");
+  await writeFile(workflowPath, renderWorkflowMarkdown(normalized), 'utf8');
   await writeProjectSecrets(envFilePath, {
     PROJECT_SLUG: normalized.projectSlug,
     GITHUB_REPOSITORY: normalized.githubRepository,
     ...(normalized.useGlobalLinearApiKey ? {} : { LINEAR_API_KEY: normalized.linearApiKey ?? undefined }),
-    ...(normalized.useGlobalGithubToken ? {} : { GITHUB_TOKEN: normalized.githubToken ?? undefined })
+    ...(normalized.useGlobalGithubToken ? {} : { GITHUB_TOKEN: normalized.githubToken ?? undefined }),
   });
 
   const record = await readProjectSetup(workflowPath, baseEnv, projectsRoot);
   return {
     ...record,
-    githubRepository: normalized.githubRepository
+    githubRepository: normalized.githubRepository,
   };
 }
 
 export async function listProjectSetups(
   workflowPaths: string[],
   baseEnv: NodeJS.ProcessEnv = process.env,
-  projectsRoot?: string
+  projectsRoot?: string,
 ): Promise<ManagedProjectRecord[]> {
   const projects = await Promise.all(
-    workflowPaths.map((workflowPath) => readProjectSetup(workflowPath, baseEnv, projectsRoot))
+    workflowPaths.map((workflowPath) => readProjectSetup(workflowPath, baseEnv, projectsRoot)),
   );
   return projects.sort((left, right) => visibleProjectName(left).localeCompare(visibleProjectName(right)));
 }
@@ -363,44 +364,51 @@ export async function listProjectSetups(
 export async function readProjectSetup(
   workflowPath: string,
   baseEnv: NodeJS.ProcessEnv = process.env,
-  projectsRoot?: string
+  projectsRoot?: string,
 ): Promise<ManagedProjectRecord> {
   const absoluteWorkflowPath = path.resolve(workflowPath);
-  const workflowContent = await readFile(absoluteWorkflowPath, "utf8");
+  const workflowContent = await readFile(absoluteWorkflowPath, 'utf8');
   const workflow = parseWorkflowFile(workflowContent);
   const root = asObject(workflow.config);
   const project = asObject(root.project);
   const polling = asObject(root.polling);
   const agent = asObject(root.agent);
-  const envFilePath = path.join(path.dirname(absoluteWorkflowPath), ".env.local");
+  const envFilePath = path.join(path.dirname(absoluteWorkflowPath), '.env.local');
   const localEnv = await readProjectSecrets(envFilePath);
   const resolvedProjectsRoot = resolveProjectsRoot(absoluteWorkflowPath, projectsRoot);
   const globalConfig = await readGlobalConfig(resolvedProjectsRoot, baseEnv);
-  const effectiveEnv = await loadWorkflowEnv(path.dirname(absoluteWorkflowPath), baseEnv, undefined, resolvedProjectsRoot);
+  const effectiveEnv = await loadWorkflowEnv(
+    path.dirname(absoluteWorkflowPath),
+    baseEnv,
+    undefined,
+    resolvedProjectsRoot,
+  );
   const trackerConfig = asObject(root.tracker);
   const hooksConfig = asObject(root.hooks);
-  const projectSlug = typeof localEnv.PROJECT_SLUG === "string"
-    ? localEnv.PROJECT_SLUG
-    : typeof effectiveEnv.PROJECT_SLUG === "string"
-      ? effectiveEnv.PROJECT_SLUG
-    : typeof trackerConfig.project_slug === "string"
-      ? trackerConfig.project_slug
-      : "";
-  const githubRepository = typeof localEnv.GITHUB_REPOSITORY === "string"
-    ? localEnv.GITHUB_REPOSITORY
-    : typeof effectiveEnv.GITHUB_REPOSITORY === "string"
-      ? effectiveEnv.GITHUB_REPOSITORY
-    : typeof hooksConfig.github_repository === "string"
-      ? hooksConfig.github_repository
-      : null;
-  const usesGlobalLinearApiKey = !(typeof localEnv.LINEAR_API_KEY === "string" && localEnv.LINEAR_API_KEY.length > 0);
-  const usesGlobalGithubToken = !(typeof localEnv.GITHUB_TOKEN === "string" && localEnv.GITHUB_TOKEN.length > 0);
+  const projectSlug =
+    typeof localEnv.PROJECT_SLUG === 'string'
+      ? localEnv.PROJECT_SLUG
+      : typeof effectiveEnv.PROJECT_SLUG === 'string'
+        ? effectiveEnv.PROJECT_SLUG
+        : typeof trackerConfig.project_slug === 'string'
+          ? trackerConfig.project_slug
+          : '';
+  const githubRepository =
+    typeof localEnv.GITHUB_REPOSITORY === 'string'
+      ? localEnv.GITHUB_REPOSITORY
+      : typeof effectiveEnv.GITHUB_REPOSITORY === 'string'
+        ? effectiveEnv.GITHUB_REPOSITORY
+        : typeof hooksConfig.github_repository === 'string'
+          ? hooksConfig.github_repository
+          : null;
+  const usesGlobalLinearApiKey = !(typeof localEnv.LINEAR_API_KEY === 'string' && localEnv.LINEAR_API_KEY.length > 0);
+  const usesGlobalGithubToken = !(typeof localEnv.GITHUB_TOKEN === 'string' && localEnv.GITHUB_TOKEN.length > 0);
   const usesGlobalPollingIntervalMs = !hasOwnValue(polling.interval_ms);
   const usesGlobalMaxConcurrentAgents = !hasOwnValue(agent.max_concurrent_agents);
 
   return {
     id: absoluteWorkflowPath,
-    displayName: typeof project.name === "string" && project.name.trim().length > 0 ? project.name.trim() : null,
+    displayName: typeof project.name === 'string' && project.name.trim().length > 0 ? project.name.trim() : null,
     enabled: coerceBoolean(project.enabled, true),
     runtimeRunning: false,
     projectSlug,
@@ -416,14 +424,14 @@ export async function readProjectSetup(
       : coercePositiveInteger(agent.max_concurrent_agents, globalConfig.defaults.maxConcurrentAgents),
     hasLinearApiKey: usesGlobalLinearApiKey
       ? globalConfig.hasLinearApiKey
-      : typeof localEnv.LINEAR_API_KEY === "string" && localEnv.LINEAR_API_KEY.length > 0,
+      : typeof localEnv.LINEAR_API_KEY === 'string' && localEnv.LINEAR_API_KEY.length > 0,
     hasGithubToken: usesGlobalGithubToken
       ? globalConfig.hasGithubToken
-      : typeof localEnv.GITHUB_TOKEN === "string" && localEnv.GITHUB_TOKEN.length > 0,
+      : typeof localEnv.GITHUB_TOKEN === 'string' && localEnv.GITHUB_TOKEN.length > 0,
     usesGlobalLinearApiKey,
     usesGlobalGithubToken,
     usesGlobalPollingIntervalMs,
-    usesGlobalMaxConcurrentAgents
+    usesGlobalMaxConcurrentAgents,
   };
 }
 
@@ -431,10 +439,10 @@ export async function updateProjectSetup(
   workflowPath: string,
   input: ProjectUpdateInput,
   baseEnv: NodeJS.ProcessEnv = process.env,
-  projectsRoot?: string
+  projectsRoot?: string,
 ): Promise<ManagedProjectRecord> {
   const absoluteWorkflowPath = path.resolve(workflowPath);
-  const workflowContent = await readFile(absoluteWorkflowPath, "utf8");
+  const workflowContent = await readFile(absoluteWorkflowPath, 'utf8');
   const definition = parseWorkflowFile(workflowContent);
   const root = asObject(definition.config);
   const resolvedProjectsRoot = resolveProjectsRoot(absoluteWorkflowPath, projectsRoot);
@@ -443,21 +451,21 @@ export async function updateProjectSetup(
   const currentRecord = await readProjectSetup(absoluteWorkflowPath, baseEnv, resolvedProjectsRoot);
   const currentSecrets = await readProjectSecrets(currentRecord.envFilePath);
 
-  setNestedString(root, ["tracker", "kind"], "linear");
-  setNestedString(root, ["tracker", "api_key"], "$LINEAR_API_KEY");
-  setNestedString(root, ["tracker", "project_slug"], "$PROJECT_SLUG");
-  setNestedString(root, ["workspace", "root"], ".orchestrai/workspaces");
-  setNestedString(root, ["codex", "command"], DEFAULT_CODEX_COMMAND);
-  setNestedString(root, ["codex", "approval_policy"], "never");
-  setNestedString(root, ["codex", "thread_sandbox"], "workspace-write");
-  setNestedValue(root, ["codex", "turn_sandbox_policy"], {
-    type: "workspaceWrite",
-    networkAccess: true
+  setNestedString(root, ['tracker', 'kind'], 'linear');
+  setNestedString(root, ['tracker', 'api_key'], '$LINEAR_API_KEY');
+  setNestedString(root, ['tracker', 'project_slug'], '$PROJECT_SLUG');
+  setNestedString(root, ['workspace', 'root'], '.orchestrai/workspaces');
+  setNestedString(root, ['codex', 'command'], DEFAULT_CODEX_COMMAND);
+  setNestedString(root, ['codex', 'approval_policy'], 'never');
+  setNestedString(root, ['codex', 'thread_sandbox'], 'workspace-write');
+  setNestedValue(root, ['codex', 'turn_sandbox_policy'], {
+    type: 'workspaceWrite',
+    networkAccess: true,
   });
-  setNestedString(root, ["hooks", "timeout_ms"], "60000");
-  setNestedString(root, ["server", "port"], "-1");
+  setNestedString(root, ['hooks', 'timeout_ms'], '60000');
+  setNestedString(root, ['server', 'port'], '-1');
 
-  const projectConfig = ensureObject(root, "project");
+  const projectConfig = ensureObject(root, 'project');
   projectConfig.enabled = currentRecord.enabled;
   if (normalized.displayName) {
     projectConfig.name = normalized.displayName;
@@ -465,29 +473,33 @@ export async function updateProjectSetup(
     delete projectConfig.name;
   }
   if (normalized.useGlobalPollingIntervalMs) {
-    deleteNestedValue(root, ["polling", "interval_ms"]);
-  } else {
-    setNestedNumber(root, ["polling", "interval_ms"], normalized.pollingIntervalMs ?? globalConfig.defaults.pollingIntervalMs);
-  }
-  if (normalized.useGlobalMaxConcurrentAgents) {
-    deleteNestedValue(root, ["agent", "max_concurrent_agents"]);
+    deleteNestedValue(root, ['polling', 'interval_ms']);
   } else {
     setNestedNumber(
       root,
-      ["agent", "max_concurrent_agents"],
-      normalized.maxConcurrentAgents ?? globalConfig.defaults.maxConcurrentAgents
+      ['polling', 'interval_ms'],
+      normalized.pollingIntervalMs ?? globalConfig.defaults.pollingIntervalMs,
+    );
+  }
+  if (normalized.useGlobalMaxConcurrentAgents) {
+    deleteNestedValue(root, ['agent', 'max_concurrent_agents']);
+  } else {
+    setNestedNumber(
+      root,
+      ['agent', 'max_concurrent_agents'],
+      normalized.maxConcurrentAgents ?? globalConfig.defaults.maxConcurrentAgents,
     );
   }
 
   await writeWorkflowDefinition(absoluteWorkflowPath, {
     config: root,
-    prompt_template: definition.prompt_template.trim().length > 0 ? definition.prompt_template : DEFAULT_PROJECT_PROMPT
+    prompt_template: definition.prompt_template.trim().length > 0 ? definition.prompt_template : DEFAULT_PROJECT_PROMPT,
   });
 
   const nextSecrets: ProjectSecrets = {
     ...currentSecrets,
     PROJECT_SLUG: normalized.projectSlug,
-    GITHUB_REPOSITORY: normalized.githubRepository
+    GITHUB_REPOSITORY: normalized.githubRepository,
   };
 
   if (normalized.useGlobalLinearApiKey) {
@@ -503,12 +515,15 @@ export async function updateProjectSetup(
 
   await writeProjectSecrets(currentRecord.envFilePath, nextSecrets);
 
-  const desiredDirectory = path.resolve(path.dirname(currentRecord.workflowDirectory), sanitizeProjectDirectory(normalized.projectSlug));
+  const desiredDirectory = path.resolve(
+    path.dirname(currentRecord.workflowDirectory),
+    sanitizeProjectDirectory(normalized.projectSlug),
+  );
   let finalWorkflowPath = absoluteWorkflowPath;
   if (desiredDirectory !== currentRecord.workflowDirectory) {
     await ensureProjectDirectoryAvailable(desiredDirectory);
     await rename(currentRecord.workflowDirectory, desiredDirectory);
-    finalWorkflowPath = path.join(desiredDirectory, "WORKFLOW.md");
+    finalWorkflowPath = path.join(desiredDirectory, 'WORKFLOW.md');
   }
 
   return readProjectSetup(finalWorkflowPath, baseEnv, resolvedProjectsRoot);
@@ -518,19 +533,19 @@ export async function setProjectEnabled(
   workflowPath: string,
   input: ProjectRuntimeControlInput & { enabled: boolean },
   baseEnv: NodeJS.ProcessEnv = process.env,
-  projectsRoot?: string
+  projectsRoot?: string,
 ): Promise<ManagedProjectRecord> {
   const absoluteWorkflowPath = path.resolve(workflowPath);
-  const workflowContent = await readFile(absoluteWorkflowPath, "utf8");
+  const workflowContent = await readFile(absoluteWorkflowPath, 'utf8');
   const definition = parseWorkflowFile(workflowContent);
   const root = asObject(definition.config);
   const normalized = normalizeProjectRuntimeControlInput(input);
-  const projectConfig = ensureObject(root, "project");
+  const projectConfig = ensureObject(root, 'project');
   projectConfig.enabled = normalized.enabled;
 
   await writeWorkflowDefinition(absoluteWorkflowPath, {
     config: root,
-    prompt_template: definition.prompt_template.trim().length > 0 ? definition.prompt_template : DEFAULT_PROJECT_PROMPT
+    prompt_template: definition.prompt_template.trim().length > 0 ? definition.prompt_template : DEFAULT_PROJECT_PROMPT,
   });
 
   return readProjectSetup(absoluteWorkflowPath, baseEnv, projectsRoot);
@@ -544,22 +559,22 @@ export async function removeProjectSetup(workflowPath: string): Promise<void> {
 export function createDashboardSetupContext(projectsRoot: string): DashboardSetupContext {
   return {
     projectsRoot: path.resolve(projectsRoot),
-    trackerKind: "linear",
-    repositoryProvider: "github",
+    trackerKind: 'linear',
+    repositoryProvider: 'github',
     globalConfig: {
       projectsRoot: path.resolve(projectsRoot),
-      envFilePath: path.join(path.resolve(projectsRoot), ".env.local"),
+      envFilePath: path.join(path.resolve(projectsRoot), '.env.local'),
       defaults: {
         pollingIntervalMs: DEFAULT_POLL_INTERVAL_MS,
-        maxConcurrentAgents: DEFAULT_MAX_CONCURRENT_AGENTS
+        maxConcurrentAgents: DEFAULT_MAX_CONCURRENT_AGENTS,
       },
       hasLinearApiKey: false,
-      hasGithubToken: false
-    }
+      hasGithubToken: false,
+    },
   };
 }
 
-export function visibleProjectName(project: Pick<ManagedProjectRecord, "displayName" | "projectSlug">): string {
+export function visibleProjectName(project: Pick<ManagedProjectRecord, 'displayName' | 'projectSlug'>): string {
   return project.displayName ?? project.projectSlug;
 }
 
@@ -572,51 +587,51 @@ function renderWorkflowMarkdown(input: {
 }): string {
   const frontMatter: Record<string, unknown> = {
     tracker: {
-      kind: "linear",
-      api_key: "$LINEAR_API_KEY",
-      project_slug: "$PROJECT_SLUG",
-      active_states: ["Todo", "In Progress", "Human Review", "Merging", "Rework"],
-      terminal_states: ["Done", "Closed", "Cancelled", "Canceled", "Duplicate"]
+      kind: 'linear',
+      api_key: '$LINEAR_API_KEY',
+      project_slug: '$PROJECT_SLUG',
+      active_states: ['Todo', 'In Progress', 'Human Review', 'Merging', 'Rework'],
+      terminal_states: ['Done', 'Closed', 'Cancelled', 'Canceled', 'Duplicate'],
     },
     workspace: {
-      root: ".orchestrai/workspaces"
+      root: '.orchestrai/workspaces',
     },
     hooks: {
       timeout_ms: 60000,
       after_create: [
-        "set -euo pipefail",
+        'set -euo pipefail',
         'if [[ -n "${GITHUB_TOKEN:-}" ]]; then',
         '  git clone "https://${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" repo',
-        "else",
+        'else',
         '  git clone "git@github.com:${GITHUB_REPOSITORY}.git" repo || git clone "https://github.com/${GITHUB_REPOSITORY}.git" repo',
-        "fi"
-      ].join("\n")
+        'fi',
+      ].join('\n'),
     },
     agent: {
       max_turns: 20,
-      max_retry_backoff_ms: 300000
+      max_retry_backoff_ms: 300000,
     },
     codex: {
       command: DEFAULT_CODEX_COMMAND,
-      approval_policy: "never",
-      thread_sandbox: "workspace-write",
+      approval_policy: 'never',
+      thread_sandbox: 'workspace-write',
       turn_sandbox_policy: {
-        type: "workspaceWrite",
-        networkAccess: true
-      }
+        type: 'workspaceWrite',
+        networkAccess: true,
+      },
     },
     server: {
-      port: -1
-    }
+      port: -1,
+    },
   };
 
   frontMatter.project = {
     enabled: true,
-    ...(input.displayName ? { name: input.displayName } : {})
+    ...(input.displayName ? { name: input.displayName } : {}),
   };
   if (!input.useGlobalPollingIntervalMs && input.pollingIntervalMs) {
     frontMatter.polling = {
-      interval_ms: input.pollingIntervalMs
+      interval_ms: input.pollingIntervalMs,
     };
   }
   if (!input.useGlobalMaxConcurrentAgents && input.maxConcurrentAgents) {
@@ -629,7 +644,7 @@ function renderWorkflowMarkdown(input: {
 
 async function ensureProjectDirectoryAvailable(workflowDirectory: string): Promise<void> {
   const existing = await stat(workflowDirectory).catch((error) => {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
       return null;
     }
 
@@ -637,16 +652,16 @@ async function ensureProjectDirectoryAvailable(workflowDirectory: string): Promi
   });
 
   if (existing) {
-    throw new ServiceError("workflow_exists", "A project workflow with this slug already exists", {
-      workflow_directory: workflowDirectory
+    throw new ServiceError('workflow_exists', 'A project workflow with this slug already exists', {
+      workflow_directory: workflowDirectory,
     });
   }
 }
 
 async function readProjectSecrets(filePath: string): Promise<ProjectSecrets> {
-  const content = await readFile(filePath, "utf8").catch((error) => {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-      return "";
+  const content = await readFile(filePath, 'utf8').catch((error) => {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      return '';
     }
     throw error;
   });
@@ -655,19 +670,23 @@ async function readProjectSecrets(filePath: string): Promise<ProjectSecrets> {
 
 async function writeProjectSecrets(filePath: string, secrets: ProjectSecrets): Promise<void> {
   const lines = Object.entries(secrets)
-    .filter(([, value]) => typeof value === "string" && value.length > 0)
+    .filter(([, value]) => typeof value === 'string' && value.length > 0)
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`);
 
-  await writeFile(filePath, `${lines.join("\n")}\n`, "utf8");
+  await writeFile(filePath, `${lines.join('\n')}\n`, 'utf8');
 }
 
 async function writeWorkflowDefinition(filePath: string, definition: WorkflowDefinition): Promise<void> {
-  await writeFile(filePath, `---\n${YAML.stringify(definition.config)}---\n${definition.prompt_template.trim()}\n`, "utf8");
+  await writeFile(
+    filePath,
+    `---\n${YAML.stringify(definition.config)}---\n${definition.prompt_template.trim()}\n`,
+    'utf8',
+  );
 }
 
 function normalizeProjectSetupInput(
   input: ProjectSetupInput,
-  globalConfig: Awaited<ReturnType<typeof readGlobalConfig>>
+  globalConfig: Awaited<ReturnType<typeof readGlobalConfig>>,
 ) {
   const useGlobalLinearApiKey =
     input.useGlobalLinearApiKey === true ||
@@ -678,29 +697,34 @@ function normalizeProjectSetupInput(
   const linearApiKey = normalizeOptionalValue(input.linearApiKey);
 
   if (!useGlobalLinearApiKey && !linearApiKey) {
-    throw new ServiceError("invalid_project_setup", "linearApiKey is required when no global Linear API key is configured");
+    throw new ServiceError(
+      'invalid_project_setup',
+      'linearApiKey is required when no global Linear API key is configured',
+    );
   }
 
   return {
     displayName: normalizeOptionalValue(input.displayName),
-    projectSlug: normalizeRequiredValue(input.projectSlug, "projectSlug"),
+    projectSlug: normalizeRequiredValue(input.projectSlug, 'projectSlug'),
     linearApiKey,
     githubRepository: normalizeGitHubRepository(input.githubRepository),
     githubToken: normalizeOptionalValue(input.githubToken),
-    pollingIntervalMs: useGlobalPollingIntervalMs ? null : coercePositiveInteger(input.pollingIntervalMs, globalConfig.defaults.pollingIntervalMs),
+    pollingIntervalMs: useGlobalPollingIntervalMs
+      ? null
+      : coercePositiveInteger(input.pollingIntervalMs, globalConfig.defaults.pollingIntervalMs),
     maxConcurrentAgents: useGlobalMaxConcurrentAgents
       ? null
       : coercePositiveInteger(input.maxConcurrentAgents, globalConfig.defaults.maxConcurrentAgents),
     useGlobalLinearApiKey,
     useGlobalGithubToken,
     useGlobalPollingIntervalMs,
-    useGlobalMaxConcurrentAgents
+    useGlobalMaxConcurrentAgents,
   };
 }
 
 function normalizeProjectUpdateInput(
   input: ProjectUpdateInput,
-  globalConfig: Awaited<ReturnType<typeof readGlobalConfig>>
+  globalConfig: Awaited<ReturnType<typeof readGlobalConfig>>,
 ) {
   const useGlobalLinearApiKey = input.useGlobalLinearApiKey === true;
   const useGlobalGithubToken = input.useGlobalGithubToken === true;
@@ -708,9 +732,9 @@ function normalizeProjectUpdateInput(
   const useGlobalMaxConcurrentAgents = input.useGlobalMaxConcurrentAgents === true;
 
   return {
-    id: normalizeRequiredValue(input.id, "id"),
+    id: normalizeRequiredValue(input.id, 'id'),
     displayName: normalizeOptionalValue(input.displayName),
-    projectSlug: normalizeRequiredValue(input.projectSlug, "projectSlug"),
+    projectSlug: normalizeRequiredValue(input.projectSlug, 'projectSlug'),
     githubRepository: normalizeGitHubRepository(input.githubRepository),
     linearApiKey: normalizeOptionalValue(input.linearApiKey),
     githubToken: normalizeOptionalValue(input.githubToken),
@@ -723,14 +747,14 @@ function normalizeProjectUpdateInput(
     useGlobalLinearApiKey,
     useGlobalGithubToken,
     useGlobalPollingIntervalMs,
-    useGlobalMaxConcurrentAgents
+    useGlobalMaxConcurrentAgents,
   };
 }
 
 function normalizeProjectRuntimeControlInput(input: ProjectRuntimeControlInput & { enabled: boolean }) {
   return {
-    id: normalizeRequiredValue(input.id, "id"),
-    enabled: Boolean(input.enabled)
+    id: normalizeRequiredValue(input.id, 'id'),
+    enabled: Boolean(input.enabled),
   };
 }
 
@@ -743,7 +767,7 @@ function resolveProjectsRoot(workflowPath: string, projectsRoot?: string): strin
 }
 
 function normalizeGitHubRepository(value: string): string {
-  const trimmed = normalizeRequiredValue(value, "githubRepository");
+  const trimmed = normalizeRequiredValue(value, 'githubRepository');
   const sshMatch = /^git@github\.com:(?<repo>[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/i.exec(trimmed);
   if (sshMatch?.groups?.repo) {
     return sshMatch.groups.repo;
@@ -759,19 +783,22 @@ function normalizeGitHubRepository(value: string): string {
     return shorthandMatch.groups.repo;
   }
 
-  throw new ServiceError("invalid_github_repository", "GitHub repository must be owner/name, https URL, or git@ URL", {
-    github_repository: value
+  throw new ServiceError('invalid_github_repository', 'GitHub repository must be owner/name, https URL, or git@ URL', {
+    github_repository: value,
   });
 }
 
 function sanitizeProjectDirectory(projectSlug: string): string {
-  return projectSlug.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+  return projectSlug
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-');
 }
 
 function normalizeRequiredValue(value: string, field: string): string {
   const normalized = value.trim();
   if (normalized.length === 0) {
-    throw new ServiceError("invalid_project_setup", `${field} is required`);
+    throw new ServiceError('invalid_project_setup', `${field} is required`);
   }
 
   return normalized;
@@ -787,15 +814,15 @@ function normalizeOptionalValue(value: string | null | undefined): string | null
 }
 
 function coerceBoolean(value: unknown, fallback: boolean): boolean {
-  if (typeof value === "boolean") {
+  if (typeof value === 'boolean') {
     return value;
   }
 
-  if (typeof value === "string") {
-    if (value === "true") {
+  if (typeof value === 'string') {
+    if (value === 'true') {
       return true;
     }
-    if (value === "false") {
+    if (value === 'false') {
       return false;
     }
   }
@@ -808,7 +835,7 @@ function hasOwnValue(value: unknown): boolean {
     return false;
   }
 
-  if (typeof value === "string") {
+  if (typeof value === 'string') {
     return value.trim().length > 0;
   }
 
@@ -816,11 +843,11 @@ function hasOwnValue(value: unknown): boolean {
 }
 
 function coercePositiveInteger(value: unknown, fallback: number): number {
-  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
     return Math.trunc(value);
   }
 
-  if (typeof value === "string" && value.trim().length > 0) {
+  if (typeof value === 'string' && value.trim().length > 0) {
     const parsed = Number.parseInt(value, 10);
     if (Number.isFinite(parsed) && parsed > 0) {
       return parsed;
@@ -831,7 +858,7 @@ function coercePositiveInteger(value: unknown, fallback: number): number {
 }
 
 function asObject(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
   }
 
