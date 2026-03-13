@@ -20,9 +20,14 @@ export function buildServiceConfig(
   const hooks = asObject(root.hooks);
   const agent = asObject(root.agent);
   const codex = asObject(root.codex);
+  const server = asObject(root.server);
 
   const workspaceRootValue =
     typeof workspace.root === "string" && workspace.root.length > 0 ? workspace.root : DEFAULT_WORKSPACE_ROOT;
+  const activeStates = applyWorkflowSemanticAdjustments(
+    coerceStringArray(tracker.active_states, DEFAULT_ACTIVE_STATES),
+    workflow.prompt_template
+  );
 
   return {
     workflowPath,
@@ -30,8 +35,8 @@ export function buildServiceConfig(
       kind: (typeof tracker.kind === "string" ? tracker.kind : "linear") as "linear",
       endpoint: typeof tracker.endpoint === "string" && tracker.endpoint.length > 0 ? tracker.endpoint : DEFAULT_LINEAR_ENDPOINT,
       apiKey: resolveSecretValue(tracker.api_key, env, "LINEAR_API_KEY"),
-      projectSlug: typeof tracker.project_slug === "string" ? tracker.project_slug : "",
-      activeStates: coerceStringArray(tracker.active_states, DEFAULT_ACTIVE_STATES),
+      projectSlug: resolveSecretValue(tracker.project_slug, env, "PROJECT_SLUG").trim(),
+      activeStates,
       terminalStates: coerceStringArray(tracker.terminal_states, DEFAULT_TERMINAL_STATES)
     },
     polling: {
@@ -61,6 +66,10 @@ export function buildServiceConfig(
       turnTimeoutMs: coercePositiveInteger(codex.turn_timeout_ms, 3600000),
       readTimeoutMs: coercePositiveInteger(codex.read_timeout_ms, 5000),
       stallTimeoutMs: coerceInteger(codex.stall_timeout_ms, 300000)
+    },
+    server: {
+      port: coerceInteger(server.port, 4318),
+      host: typeof server.host === "string" && server.host.trim().length > 0 ? server.host.trim() : "127.0.0.1"
     }
   };
 }
@@ -144,4 +153,16 @@ function coerceStateLimitMap(value: unknown): Record<string, number> {
   }
 
   return output;
+}
+
+function applyWorkflowSemanticAdjustments(activeStates: string[], promptTemplate: string): string[] {
+  if (!/\bHuman Review\b/.test(promptTemplate)) {
+    return activeStates;
+  }
+
+  if (activeStates.some((state) => normalizeState(state) === normalizeState("Human Review"))) {
+    return activeStates;
+  }
+
+  return [...activeStates, "Human Review"];
 }

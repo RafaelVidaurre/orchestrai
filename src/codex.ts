@@ -3,6 +3,7 @@ import { once } from "node:events";
 
 import type { CodexRuntimeEvent, ServiceConfig } from "./domain";
 import { ServiceError } from "./errors";
+import { executeLinearGraphqlTool } from "./linear-tool";
 import { Logger } from "./logger";
 
 const MAX_STDOUT_LINE_BYTES = 10 * 1024 * 1024;
@@ -42,6 +43,7 @@ export class CodexAppServerSession {
   constructor(
     private readonly config: ServiceConfig,
     private readonly workspacePath: string,
+    private readonly env: NodeJS.ProcessEnv,
     private readonly logger: Logger,
     private readonly onEvent: (event: CodexRuntimeEvent) => void
   ) {}
@@ -49,6 +51,7 @@ export class CodexAppServerSession {
   async start(): Promise<{ threadId: string; pid: number | null }> {
     this.child = spawn("bash", ["-lc", this.config.codex.command], {
       cwd: this.workspacePath,
+      env: this.env,
       stdio: ["pipe", "pipe", "pipe"]
     });
 
@@ -86,6 +89,7 @@ export class CodexAppServerSession {
         }
       });
       this.notify("initialized", {});
+      await this.ensureLinearMcpAvailable();
 
       const threadStart = (await this.request("thread/start", {
         cwd: this.workspacePath,
@@ -111,6 +115,29 @@ export class CodexAppServerSession {
       await this.stop();
       throw error;
     }
+  }
+
+  private async ensureLinearMcpAvailable(): Promise<void> {
+    const response = (await this.request("mcpServerStatus/list", {
+      limit: 100
+    })) as { data?: Array<{ name?: string; authStatus?: string }> };
+
+    const servers = response.data ?? [];
+    const linearServer = servers.find((server) => (server.name ?? "").toLowerCase().includes("linear"));
+    if (!linearServer) {
+      throw new ServiceError("missing_linear_mcp", "Linear MCP is required but no Linear MCP server is configured in Codex");
+    }
+
+    if (!["bearerToken", "oAuth"].includes(linearServer.authStatus ?? "")) {
+      throw new ServiceError(
+        "linear_mcp_not_ready",
+        `Linear MCP is present but not authenticated (status: ${linearServer.authStatus ?? "unknown"})`
+      );
+    }
+
+    this.emit("notification", {
+      message: `linear_mcp_ready:${linearServer.name}`
+    });
   }
 
   async runTurn(threadId: string, prompt: string): Promise<{ threadId: string; turnId: string }> {
@@ -409,21 +436,7 @@ export class CodexAppServerSession {
         });
         return;
       case "item/tool/call":
-        this.emit("unsupported_tool_call", {
-          message: String(params.tool ?? "unknown")
-        });
-        this.send({
-          id,
-          result: {
-            success: false,
-            contentItems: [
-              {
-                type: "inputText",
-                text: "unsupported_tool_call"
-              }
-            ]
-          }
-        });
+        await this.handleDynamicToolCall(id, params);
         return;
       default:
         this.send({
@@ -439,6 +452,65 @@ export class CodexAppServerSession {
           }
         });
     }
+  }
+
+  private async handleDynamicToolCall(id: number | string, params: Record<string, unknown>): Promise<void> {
+    const tool = String(params.tool ?? "unknown");
+
+    if (tool === "linear_graphql") {
+      try {
+        const result = await executeLinearGraphqlTool(this.config, params.arguments);
+        this.send({
+          id,
+          result: {
+            success: result.success,
+            contentItems: [
+              {
+                type: "inputText",
+                text: result.text
+              }
+            ]
+          }
+        });
+      } catch (error) {
+        this.send({
+          id,
+          result: {
+            success: false,
+            contentItems: [
+              {
+                type: "inputText",
+                text: JSON.stringify(
+                  {
+                    success: false,
+                    error: error instanceof Error ? error.message : "linear_graphql failed"
+                  },
+                  null,
+                  2
+                )
+              }
+            ]
+          }
+        });
+      }
+      return;
+    }
+
+    this.emit("unsupported_tool_call", {
+      message: tool
+    });
+    this.send({
+      id,
+      result: {
+        success: false,
+        contentItems: [
+          {
+            type: "inputText",
+            text: "unsupported_tool_call"
+          }
+        ]
+      }
+    });
   }
 
   private request(method: string, params: Record<string, unknown>): Promise<unknown> {

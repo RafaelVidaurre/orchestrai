@@ -1,46 +1,63 @@
-# Stori Symphony
+# Symphony Orchestrator
 
-This repository contains a TypeScript implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md), tailored for the Stori project.
+This repository contains a TypeScript implementation of the [OpenAI Symphony spec](https://github.com/openai/symphony/blob/main/SPEC.md) for unattended, Linear-driven repository work.
 
 The service:
 
-- polls Linear for active issues in a configured project
-- creates and reuses per-issue workspaces under `.symphony/workspaces`
-- loads all runtime behavior from the repo-owned [`WORKFLOW.md`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/WORKFLOW.md)
+- polls Linear for active issues in one or more configured projects
+- creates and reuses per-issue workspaces under a configured root
+- loads runtime behavior from workflow Markdown files
 - launches `codex app-server` inside each issue workspace
+- requires Linear MCP to be available and authenticated inside the child Codex session
 - reconciles live runs against tracker state, retries failures with backoff, and cleans terminal workspaces
-
-## Trust Posture
-
-This port is intentionally high-trust by default:
-
-- `codex.approval_policy`: `never`
-- `codex.thread_sandbox`: `workspace-write`
-- unexpected approval prompts are auto-approved for the session
-- user-input requests hard-fail the active run
-- unsupported dynamic tool calls are rejected instead of stalling the session
-
-If you need a stricter deployment, change the `codex` section in [`WORKFLOW.md`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/WORKFLOW.md).
+- serves a live dashboard over HTTP with aggregated activity across projects
 
 ## Requirements
 
 - Node.js 22+
+- Corepack-enabled Yarn 3.4.1
 - `codex` on `PATH`
-- `LINEAR_API_KEY` available either in the shell environment, `.env`, or `.env.local`
-- a valid Linear project slug in [`WORKFLOW.md`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/WORKFLOW.md)
+- Linear MCP configured and authenticated in the Codex environment used by `codex app-server`
 
 ## Commands
 
 ```bash
-npm install
-npm run build
-npm test
-npm start
+corepack enable
+yarn install
+yarn build
+yarn test
+yarn start
 ```
 
-## Env Files
+## Workflow Resolution
 
-The CLI loads env files from the same directory as [`WORKFLOW.md`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/WORKFLOW.md):
+The CLI accepts either a single workflow file or a directory of workflow files:
+
+```bash
+yarn start /abs/path/to/WORKFLOW.md
+yarn start /abs/path/to/workflows
+```
+
+If no path is provided, startup resolution is:
+
+1. `./workflows` if that directory exists
+2. `./WORKFLOW.md`
+
+Directory mode recursively loads files named `WORKFLOW.md` or `*.workflow.md`.
+
+## Multi-Project Setup
+
+Each workflow can point at a completely different Linear project and clone a completely different repository via `hooks.after_create`.
+
+Example directory layout:
+
+```text
+workflows/
+  game-client.workflow.md
+  backend.workflow.md
+```
+
+Each workflow file loads env files from its own directory:
 
 - `.env`
 - `.env.local`
@@ -53,15 +70,24 @@ Precedence is:
 
 `.env.local` is gitignored.
 
+## Observability
+
+- Process logs are human-readable by default.
+- Set `LOG_LEVEL=debug` for noisier runtime detail.
+- Set `LOG_FORMAT=json` for structured logs.
+- The dashboard aggregates all loaded workflows and shows per-project links, limits, active agents, queued retries, and recent orchestration events.
+- If multiple workflows specify dashboard settings, the first enabled server config is used.
+
 ## Important Files
 
-- [`src/orchestrator.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/orchestrator.ts): poll loop, dispatch, retries, reconciliation
-- [`src/codex.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/codex.ts): stdio app-server client for Codex
-- [`src/tracker.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/tracker.ts): Linear GraphQL adapter and issue normalization
+- [`WORKFLOW.md`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/WORKFLOW.md): generic single-workflow template
+- [`src/runtime.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/runtime.ts): multi-workflow startup and aggregated snapshots
+- [`src/orchestrator.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/orchestrator.ts): per-workflow poll loop, dispatch, retries, reconciliation
+- [`src/status-server.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/status-server.ts): live aggregated dashboard
+- [`src/tracker.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/tracker.ts): Linear GraphQL adapter and project/rate-limit discovery
 - [`src/workspace.ts`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/src/workspace.ts): workspace safety and hook execution
-- [`docs/stori-product-spec.md`](/Users/rafaelvidaurre/Code/Personal/agentic-development/stori/repo/docs/stori-product-spec.md): local copy of the March 13, 2026 product direction
 
 ## Notes
 
-- The default `project_slug` is set to `stori` as a starting assumption. Change it if the Linear project slug differs.
-- The optional `linear_graphql` client-side tool extension from the Symphony spec is not implemented yet.
+- The runtime prefers Linear MCP and fails worker startup if Linear MCP is missing or unauthenticated.
+- A limited `linear_graphql` dynamic tool handler still exists as a fallback path when Codex issues that tool call.

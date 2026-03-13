@@ -1,4 +1,11 @@
-import type { Issue, ServiceConfig, TrackerConfig } from "./domain";
+import type {
+  Issue,
+  LinearProjectInfo,
+  LinearRateLimitWindow,
+  LinearRateLimits,
+  ServiceConfig,
+  TrackerConfig
+} from "./domain";
 import { ServiceError } from "./errors";
 import { Logger } from "./logger";
 
@@ -34,6 +41,12 @@ type IssueNode = {
   updatedAt?: string | null;
 };
 
+type ProjectNode = {
+  name?: string | null;
+  slugId?: string | null;
+  url?: string | null;
+};
+
 type IssuesConnection = {
   issues?: {
     nodes?: IssueNode[];
@@ -48,10 +61,19 @@ export interface IssueTrackerClient {
   fetchCandidateIssues(): Promise<Issue[]>;
   fetchIssuesByStates(states: string[]): Promise<Issue[]>;
   fetchIssueStatesByIds(issueIds: string[]): Promise<Issue[]>;
+  fetchProjectMetadata(): Promise<LinearProjectInfo | null>;
+}
+
+interface TrackerObserver {
+  onLinearRateLimits?: (limits: LinearRateLimits) => void;
 }
 
 export class LinearIssueTrackerClient implements IssueTrackerClient {
-  constructor(private readonly tracker: TrackerConfig, private readonly logger: Logger) {}
+  constructor(
+    private readonly tracker: TrackerConfig,
+    private readonly logger: Logger,
+    private readonly observer: TrackerObserver = {}
+  ) {}
 
   async fetchCandidateIssues(): Promise<Issue[]> {
     return this.fetchIssuesByStates(this.tracker.activeStates);
@@ -124,6 +146,60 @@ export class LinearIssueTrackerClient implements IssueTrackerClient {
     );
 
     return (data.issues?.nodes ?? []).map(normalizeIssue);
+  }
+
+  async fetchProjectMetadata(): Promise<LinearProjectInfo | null> {
+    try {
+      const data = await this.request<{
+        projects?: {
+          nodes?: ProjectNode[];
+        };
+      }>(
+        `
+          query SymphonyFetchProject($projectSlug: String!) {
+            projects(filter: { slugId: { eq: $projectSlug } }, first: 1) {
+              nodes {
+                name
+                slugId
+                url
+              }
+            }
+          }
+        `,
+        {
+          projectSlug: this.tracker.projectSlug
+        }
+      );
+
+      return normalizeProject(data.projects?.nodes?.[0] ?? null, this.tracker.projectSlug);
+    } catch (error) {
+      this.logger.debug("project metadata query with url failed; retrying without url", {
+        project_slug: this.tracker.projectSlug,
+        error_message: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    const fallback = await this.request<{
+      projects?: {
+        nodes?: ProjectNode[];
+      };
+    }>(
+      `
+        query SymphonyFetchProjectFallback($projectSlug: String!) {
+          projects(filter: { slugId: { eq: $projectSlug } }, first: 1) {
+            nodes {
+              name
+              slugId
+            }
+          }
+        }
+      `,
+      {
+        projectSlug: this.tracker.projectSlug
+      }
+    );
+
+    return normalizeProject(fallback.projects?.nodes?.[0] ?? null, this.tracker.projectSlug);
   }
 
   private async paginateIssues(states: string[]): Promise<IssueNode[]> {
@@ -237,6 +313,11 @@ export class LinearIssueTrackerClient implements IssueTrackerClient {
       });
     }
 
+    const rateLimits = parseLinearRateLimits(response.headers);
+    if (rateLimits) {
+      this.observer.onLinearRateLimits?.(rateLimits);
+    }
+
     const payload = (await response.json()) as GraphqlResponse<T>;
     if (payload.errors && payload.errors.length > 0) {
       this.logger.error("linear graphql errors", {
@@ -255,8 +336,42 @@ export class LinearIssueTrackerClient implements IssueTrackerClient {
   }
 }
 
-export function createTrackerClient(config: ServiceConfig, logger: Logger): IssueTrackerClient {
-  return new LinearIssueTrackerClient(config.tracker, logger.child({ component: "tracker", tracker_kind: "linear" }));
+export function createTrackerClient(
+  config: ServiceConfig,
+  logger: Logger,
+  observer?: TrackerObserver
+): IssueTrackerClient {
+  return new LinearIssueTrackerClient(config.tracker, logger.child({ component: "tracker", tracker_kind: "linear" }), observer);
+}
+
+export function parseLinearRateLimits(headers: Headers, observedAtMs = Date.now()): LinearRateLimits | null {
+  const requests = readWindow(headers, "x-ratelimit-requests");
+  const complexity = readWindow(headers, "x-ratelimit-complexity");
+  const endpointRequests = readWindow(headers, "x-ratelimit-endpoint-requests");
+  const endpointName = asOptionalString(headers.get("x-ratelimit-endpoint-name"));
+  const lastQueryComplexity = parseIntegerHeader(headers.get("x-complexity"));
+
+  if (!requests && !complexity && !endpointRequests && !endpointName && lastQueryComplexity === null) {
+    return null;
+  }
+
+  return {
+    auth_mode: "api_key",
+    observed_at: new Date(observedAtMs).toISOString(),
+    requests,
+    complexity,
+    endpoint_requests: endpointRequests || endpointName
+      ? {
+          ...(endpointRequests ?? {
+            limit: null,
+            remaining: null,
+            reset_at_ms: null
+          }),
+          name: endpointName
+        }
+      : null,
+    last_query_complexity: lastQueryComplexity
+  };
 }
 
 function normalizeIssue(node: IssueNode): Issue {
@@ -302,4 +417,77 @@ function normalizeTimestamp(value: string | null | undefined): string | null {
   }
 
   return Number.isNaN(Date.parse(value)) ? null : value;
+}
+
+function normalizeProject(node: ProjectNode | null, fallbackSlug: string): LinearProjectInfo | null {
+  if (!node) {
+    return null;
+  }
+
+  const slug = node.slugId?.trim() || fallbackSlug;
+  if (!slug) {
+    return null;
+  }
+
+  return {
+    slug,
+    name: node.name?.trim() || null,
+    url: node.url?.trim() || null,
+    updated_at: new Date().toISOString()
+  };
+}
+
+function readWindow(headers: Headers, prefix: string): LinearRateLimitWindow | null {
+  const limit = parseIntegerHeader(headers.get(`${prefix}-limit`));
+  const remaining = parseIntegerHeader(headers.get(`${prefix}-remaining`));
+  const resetAtMs = parseResetHeader(headers.get(`${prefix}-reset`));
+
+  if (limit === null && remaining === null && resetAtMs === null) {
+    return null;
+  }
+
+  return {
+    limit,
+    remaining,
+    reset_at_ms: resetAtMs
+  };
+}
+
+function parseIntegerHeader(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseResetHeader(value: string | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  if (/^\d+$/.test(value)) {
+    const numeric = Number.parseInt(value, 10);
+    if (!Number.isFinite(numeric)) {
+      return null;
+    }
+
+    if (numeric >= 1_000_000_000_000) {
+      return numeric;
+    }
+
+    if (numeric >= 1_000_000_000) {
+      return numeric * 1000;
+    }
+
+    return Date.now() + numeric * 1000;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function asOptionalString(value: string | null): string | null {
+  return value && value.trim().length > 0 ? value.trim() : null;
 }

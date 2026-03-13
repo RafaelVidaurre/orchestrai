@@ -3,3 +3,10 @@ node_modules
 coverage
 .DS_Store
 .env.local
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions

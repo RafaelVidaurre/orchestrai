@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildServiceConfig } from "../src/config";
 import type { WorkflowDefinition } from "../src/domain";
-import { loadEnvFiles } from "../src/env";
+import { loadEnvFiles, loadWorkflowEnv } from "../src/env";
 
 describe("buildServiceConfig", () => {
   it("resolves env-backed secrets and normalizes state overrides", () => {
@@ -15,7 +15,7 @@ describe("buildServiceConfig", () => {
         tracker: {
           kind: "linear",
           api_key: "$LINEAR_API_KEY",
-          project_slug: "stori",
+          project_slug: "$PROJECT_SLUG",
           active_states: ["Todo", "In Progress"],
           terminal_states: ["Done"]
         },
@@ -35,11 +35,13 @@ describe("buildServiceConfig", () => {
 
     const config = buildServiceConfig("/tmp/workflow.md", workflow, {
       LINEAR_API_KEY: "linear-token",
-      WORKSPACE_ROOT: "/tmp/stori-workspaces"
+      PROJECT_SLUG: "project-alpha",
+      WORKSPACE_ROOT: "/tmp/project-alpha-workspaces"
     });
 
     expect(config.tracker.apiKey).toBe("linear-token");
-    expect(config.workspace.root).toBe(path.resolve("/tmp/stori-workspaces"));
+    expect(config.tracker.projectSlug).toBe("project-alpha");
+    expect(config.workspace.root).toBe(path.resolve("/tmp/project-alpha-workspaces"));
     expect(config.agent.maxConcurrentAgentsByState).toEqual({
       todo: 1,
       "in progress": 2
@@ -47,7 +49,7 @@ describe("buildServiceConfig", () => {
   });
 
   it("loads .env and lets .env.local override it without overriding shell env", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "stori-env-test-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "workflow-env-test-"));
     await writeFile(path.join(root, ".env"), "LINEAR_API_KEY=from-dotenv\nWORKSPACE_ROOT=/tmp/from-dotenv\n");
     await writeFile(path.join(root, ".env.local"), "LINEAR_API_KEY=from-dotenv-local\nLOCAL_ONLY=present\n");
 
@@ -60,5 +62,37 @@ describe("buildServiceConfig", () => {
     expect(env.WORKSPACE_ROOT).toBe("/tmp/from-shell");
     expect(env.LINEAR_API_KEY).toBe("from-dotenv-local");
     expect(env.LOCAL_ONLY).toBe("present");
+  });
+
+  it("builds an isolated workflow env without mutating the base env", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "workflow-env-copy-"));
+    await writeFile(path.join(root, ".env"), "PROJECT_SLUG=from-workflow\n");
+
+    const baseEnv: NodeJS.ProcessEnv = {
+      LINEAR_API_KEY: "from-shell"
+    };
+
+    const scopedEnv = await loadWorkflowEnv(root, baseEnv);
+
+    expect(baseEnv.PROJECT_SLUG).toBeUndefined();
+    expect(scopedEnv.LINEAR_API_KEY).toBe("from-shell");
+    expect(scopedEnv.PROJECT_SLUG).toBe("from-workflow");
+  });
+
+  it("auto-includes Human Review when the workflow prompt expects it", () => {
+    const workflow: WorkflowDefinition = {
+      config: {
+        tracker: {
+          kind: "linear",
+          api_key: "token",
+          project_slug: "project-alpha",
+          active_states: ["Todo", "In Progress"]
+        }
+      },
+      prompt_template: "Move the ticket to Human Review when complete."
+    };
+
+    const config = buildServiceConfig("/tmp/workflow.md", workflow, {});
+    expect(config.tracker.activeStates).toContain("Human Review");
   });
 });

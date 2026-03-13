@@ -5,6 +5,16 @@ import { parse } from "dotenv";
 
 import { Logger } from "./logger";
 
+export async function loadWorkflowEnv(
+  baseDir: string,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  logger?: Logger
+): Promise<NodeJS.ProcessEnv> {
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
+  await loadEnvFiles(baseDir, env, logger);
+  return env;
+}
+
 export async function loadEnvFiles(baseDir: string, env: NodeJS.ProcessEnv = process.env, logger?: Logger): Promise<void> {
   const protectedKeys = new Set(Object.keys(env));
 

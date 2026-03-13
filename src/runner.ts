@@ -1,4 +1,12 @@
-import type { CodexRuntimeEvent, Issue, LoadedWorkflow, ServiceConfig, WorkerCancelReason, WorkerOutcome } from "./domain";
+import type {
+  CodexRuntimeEvent,
+  Issue,
+  LoadedWorkflow,
+  ServiceConfig,
+  WorkerActivityEvent,
+  WorkerCancelReason,
+  WorkerOutcome
+} from "./domain";
 import { CodexAppServerSession } from "./codex";
 import { ServiceError, errorMessage } from "./errors";
 import { Logger } from "./logger";
@@ -19,7 +27,8 @@ export class IssueWorker {
     private readonly attempt: number | null,
     private readonly workflow: LoadedWorkflow,
     logger: Logger,
-    private readonly onCodexEvent: (event: CodexRuntimeEvent) => void
+    private readonly onCodexEvent: (event: CodexRuntimeEvent) => void,
+    private readonly onActivityEvent: (event: WorkerActivityEvent) => void
   ) {
     this.workspaceManager = new WorkspaceManager(logger.child({ component: "workspace" }));
     this.tracker = createTrackerClient(this.workflow.config, logger.child({ component: "tracker" }));
@@ -44,30 +53,38 @@ export class IssueWorker {
     let workspacePath: string | null = null;
 
     try {
-      const workspace = await this.workspaceManager.ensureWorkspace(this.workflow.config, this.issue.identifier);
+      this.reportActivity("preparing_workspace", "Preparing issue workspace");
+      const workspace = await this.workspaceManager.ensureWorkspace(this.workflow.config, this.issue.identifier, this.workflow.env);
       workspacePath = workspace.path;
       await this.workspaceManager.prepareWorkspace(this.workflow.config, workspace.path);
-      await this.workspaceManager.runBeforeRun(this.workflow.config, workspace.path);
+      this.reportActivity("running_before_run_hook", "Running before_run hook");
+      await this.workspaceManager.runBeforeRun(this.workflow.config, workspace.path, this.workflow.env);
 
+      this.reportActivity("launching_agent_process", "Launching Codex app-server");
       this.session = new CodexAppServerSession(
         this.workflow.config,
-        workspace.path,
+        workspace.runPath,
+        this.workflow.env,
         this.logger.child({ component: "codex" }),
         this.onCodexEvent
       );
 
+      this.reportActivity("initializing_session", "Initializing Codex session");
       const { threadId } = await this.session.start();
 
       while (true) {
         this.assertNotCancelled();
         turnCount += 1;
 
+        this.reportActivity("building_prompt", `Rendering prompt for turn ${turnCount}`);
         const prompt =
           turnCount === 1
             ? await renderPrompt(this.workflow.definition, currentIssue, this.attempt)
             : buildContinuationPrompt(currentIssue, turnCount, this.workflow.config.agent.maxTurns);
 
+        this.reportActivity("streaming_turn", `Streaming Codex turn ${turnCount}`);
         await this.session.runTurn(threadId, prompt);
+        this.reportActivity("refreshing_issue_state", "Refreshing issue state from Linear");
         const refreshedIssues = await this.tracker.fetchIssueStatesByIds([currentIssue.id]);
         currentIssue = refreshedIssues[0] ?? currentIssue;
 
@@ -119,9 +136,10 @@ export class IssueWorker {
         turnCount
       };
     } finally {
+      this.reportActivity("finishing", "Finishing worker run");
       await this.session?.stop().catch(() => undefined);
       if (workspacePath) {
-        await this.workspaceManager.runAfterRun(this.workflow.config, workspacePath);
+        await this.workspaceManager.runAfterRun(this.workflow.config, workspacePath, this.workflow.env);
       }
     }
   }
@@ -130,6 +148,14 @@ export class IssueWorker {
     if (this.cancelReason) {
       throw new ServiceError("worker_cancelled", `Worker cancelled: ${this.cancelReason}`);
     }
+  }
+
+  private reportActivity(phase: WorkerActivityEvent["phase"], message: string): void {
+    this.onActivityEvent({
+      phase,
+      message,
+      timestamp: new Date().toISOString()
+    });
   }
 }
 

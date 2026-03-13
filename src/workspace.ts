@@ -12,7 +12,7 @@ const PREP_ARTIFACTS = ["tmp", ".elixir_ls"];
 export class WorkspaceManager {
   constructor(private readonly logger: Logger) {}
 
-  async ensureWorkspace(config: ServiceConfig, issueIdentifier: string): Promise<WorkspaceInfo> {
+  async ensureWorkspace(config: ServiceConfig, issueIdentifier: string, env: NodeJS.ProcessEnv = process.env): Promise<WorkspaceInfo> {
     const workspaceKey = sanitizeWorkspaceKey(issueIdentifier);
     const workspacePath = path.resolve(config.workspace.root, workspaceKey);
     assertWorkspacePath(config.workspace.root, workspacePath);
@@ -38,7 +38,7 @@ export class WorkspaceManager {
 
     if (createdNow && config.hooks.afterCreate) {
       try {
-        await runHook("after_create", config.hooks.afterCreate, workspacePath, config.hooks.timeoutMs, this.logger);
+        await runHook("after_create", config.hooks.afterCreate, workspacePath, config.hooks.timeoutMs, env, this.logger);
       } catch (error) {
         await rm(workspacePath, { recursive: true, force: true });
         throw error;
@@ -48,7 +48,8 @@ export class WorkspaceManager {
     return {
       path: workspacePath,
       workspaceKey,
-      createdNow
+      createdNow,
+      runPath: await this.resolveExecutionPath(config, workspacePath)
     };
   }
 
@@ -68,31 +69,31 @@ export class WorkspaceManager {
     }
   }
 
-  async runBeforeRun(config: ServiceConfig, workspacePath: string): Promise<void> {
+  async runBeforeRun(config: ServiceConfig, workspacePath: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
     if (!config.hooks.beforeRun) {
       return;
     }
 
-    assertWorkspacePath(config.workspace.root, workspacePath);
-    await runHook("before_run", config.hooks.beforeRun, workspacePath, config.hooks.timeoutMs, this.logger);
+    const executionPath = await this.resolveExecutionPath(config, workspacePath);
+    await runHook("before_run", config.hooks.beforeRun, executionPath, config.hooks.timeoutMs, env, this.logger);
   }
 
-  async runAfterRun(config: ServiceConfig, workspacePath: string): Promise<void> {
+  async runAfterRun(config: ServiceConfig, workspacePath: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
     if (!config.hooks.afterRun) {
       return;
     }
 
-    assertWorkspacePath(config.workspace.root, workspacePath);
+    const executionPath = await this.resolveExecutionPath(config, workspacePath);
     try {
-      await runHook("after_run", config.hooks.afterRun, workspacePath, config.hooks.timeoutMs, this.logger);
+      await runHook("after_run", config.hooks.afterRun, executionPath, config.hooks.timeoutMs, env, this.logger);
     } catch (error) {
       this.logger.errorWithCause("after_run hook failed", error, {
-        workspace_path: workspacePath
+        workspace_path: executionPath
       });
     }
   }
 
-  async removeWorkspace(config: ServiceConfig, issueIdentifier: string): Promise<void> {
+  async removeWorkspace(config: ServiceConfig, issueIdentifier: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
     const workspaceKey = sanitizeWorkspaceKey(issueIdentifier);
     const workspacePath = path.resolve(config.workspace.root, workspaceKey);
     assertWorkspacePath(config.workspace.root, workspacePath);
@@ -109,12 +110,14 @@ export class WorkspaceManager {
       throw error;
     }
 
+    const executionPath = await this.resolveExecutionPath(config, workspacePath);
+
     if (config.hooks.beforeRemove) {
       try {
-        await runHook("before_remove", config.hooks.beforeRemove, workspacePath, config.hooks.timeoutMs, this.logger);
+        await runHook("before_remove", config.hooks.beforeRemove, executionPath, config.hooks.timeoutMs, env, this.logger);
       } catch (error) {
         this.logger.errorWithCause("before_remove hook failed", error, {
-          workspace_path: workspacePath
+          workspace_path: executionPath
         });
       }
     }
@@ -129,6 +132,39 @@ export class WorkspaceManager {
     await mkdir(config.workspace.root, { recursive: true });
     const entries = await readdir(config.workspace.root, { withFileTypes: true });
     return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+  }
+
+  async resolveExecutionPath(config: ServiceConfig, workspacePath: string): Promise<string> {
+    assertWorkspacePath(config.workspace.root, workspacePath);
+
+    if (await hasGitMarker(workspacePath)) {
+      return workspacePath;
+    }
+
+    const entries = await readdir(workspacePath, { withFileTypes: true });
+    const repoChildren: string[] = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const childPath = path.join(workspacePath, entry.name);
+      if (await hasGitMarker(childPath)) {
+        repoChildren.push(childPath);
+      }
+    }
+
+    if (repoChildren.length === 1) {
+      const resolved = repoChildren[0];
+      assertWorkspacePath(config.workspace.root, resolved);
+      this.logger.debug("workspace execution path resolved to nested repository", {
+        workspace_path: workspacePath,
+        execution_path: resolved
+      });
+      return resolved;
+    }
+
+    return workspacePath;
   }
 }
 
@@ -146,6 +182,7 @@ async function runHook(
   script: string,
   cwd: string,
   timeoutMs: number,
+  env: NodeJS.ProcessEnv,
   logger: Logger
 ): Promise<void> {
   logger.info("hook started", {
@@ -154,8 +191,9 @@ async function runHook(
   });
 
   await new Promise<void>((resolve, reject) => {
-    const child = spawn("sh", ["-lc", script], {
+    const child = spawn("bash", ["-lc", script], {
       cwd,
+      env,
       stdio: ["ignore", "pipe", "pipe"]
     });
 
@@ -209,4 +247,16 @@ async function runHook(
       );
     });
   });
+}
+
+async function hasGitMarker(candidatePath: string): Promise<boolean> {
+  try {
+    await access(path.join(candidatePath, ".git"));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }

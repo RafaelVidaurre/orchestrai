@@ -56,6 +56,11 @@ export interface AgentConfig {
   maxTurns: number;
 }
 
+export interface ServerConfig {
+  port: number;
+  host: string;
+}
+
 export interface CodexConfig {
   command: string;
   approvalPolicy: unknown;
@@ -74,18 +79,21 @@ export interface ServiceConfig {
   hooks: HooksConfig;
   agent: AgentConfig;
   codex: CodexConfig;
+  server: ServerConfig;
 }
 
 export interface LoadedWorkflow {
   definition: WorkflowDefinition;
   config: ServiceConfig;
   version: number;
+  env: NodeJS.ProcessEnv;
 }
 
 export interface WorkspaceInfo {
   path: string;
   workspaceKey: string;
   createdNow: boolean;
+  runPath: string;
 }
 
 export type WorkerCancelReason =
@@ -124,6 +132,20 @@ export interface CodexRuntimeEvent {
   message?: string;
 }
 
+export interface WorkerActivityEvent {
+  phase:
+    | "preparing_workspace"
+    | "running_before_run_hook"
+    | "launching_agent_process"
+    | "initializing_session"
+    | "building_prompt"
+    | "streaming_turn"
+    | "refreshing_issue_state"
+    | "finishing";
+  timestamp: string;
+  message: string;
+}
+
 export interface WorkerSuccessOutcome {
   kind: "normal";
   issue: Issue;
@@ -142,6 +164,7 @@ export type WorkerOutcome = WorkerSuccessOutcome | WorkerFailureOutcome;
 export interface RetryEntry {
   issueId: string;
   identifier: string;
+  title: string;
   attempt: number;
   dueAtMs: number;
   timerHandle: NodeJS.Timeout;
@@ -172,6 +195,8 @@ export interface RunningEntry {
   lastReportedTotalTokens: number;
   turnCount: number;
   cancellingReason: WorkerCancelReason | null;
+  phase: WorkerActivityEvent["phase"] | "queued";
+  activity: string;
 }
 
 export interface RuntimeTotals {
@@ -179,4 +204,114 @@ export interface RuntimeTotals {
   outputTokens: number;
   totalTokens: number;
   secondsRunning: number;
+}
+
+export interface LinearProjectInfo {
+  slug: string;
+  name: string | null;
+  url: string | null;
+  updated_at: string | null;
+}
+
+export interface LinearRateLimitWindow {
+  limit: number | null;
+  remaining: number | null;
+  reset_at_ms: number | null;
+}
+
+export interface LinearRateLimits {
+  auth_mode: "api_key" | "unknown";
+  observed_at: string;
+  requests: LinearRateLimitWindow | null;
+  complexity: LinearRateLimitWindow | null;
+  endpoint_requests:
+    | (LinearRateLimitWindow & {
+        name: string | null;
+      })
+    | null;
+  last_query_complexity: number | null;
+}
+
+export interface OperatorEvent {
+  timestamp: string;
+  level: "debug" | "info" | "warn" | "error";
+  message: string;
+  issueId?: string;
+  issueIdentifier?: string;
+  fields?: Record<string, unknown>;
+}
+
+export interface StatusProjectSummary {
+  workflow_path: string;
+  poll_interval_ms: number;
+  max_concurrent_agents: number;
+  running_count: number;
+  retry_count: number;
+  completed_count: number;
+  claimed_count: number;
+  linear_project: LinearProjectInfo;
+  linear_rate_limits: LinearRateLimits | null;
+  codex_totals: RuntimeTotals;
+  codex_rate_limits: unknown;
+  updated_at: string;
+}
+
+export interface StatusRunningEntry {
+  workflow_path: string;
+  project_slug: string;
+  project_name: string | null;
+  project_url: string | null;
+  issue_id: string;
+  identifier: string;
+  title: string;
+  state: string;
+  priority: number | null;
+  attempt: number | null;
+  session_id: string | null;
+  thread_id: string | null;
+  turn_id: string | null;
+  codex_app_server_pid: number | null;
+  phase: string;
+  activity: string;
+  last_event: string | null;
+  last_message: string | null;
+  last_timestamp_ms: number | null;
+  started_at_ms: number;
+  turn_count: number;
+  codex_input_tokens: number;
+  codex_output_tokens: number;
+  codex_total_tokens: number;
+  issue_url: string | null;
+}
+
+export interface StatusRetryEntry {
+  workflow_path: string;
+  project_slug: string;
+  project_name: string | null;
+  project_url: string | null;
+  issue_id: string;
+  identifier: string;
+  title: string;
+  attempt: number;
+  due_at_ms: number;
+  error: string | null;
+}
+
+export interface StatusSnapshot {
+  updated_at: string;
+  project_count: number;
+  running_count: number;
+  retry_count: number;
+  completed_count: number;
+  claimed_count: number;
+  projects: StatusProjectSummary[];
+  running: StatusRunningEntry[];
+  retries: StatusRetryEntry[];
+  codex_totals: RuntimeTotals;
+  recent_events: OperatorEvent[];
+}
+
+export interface StatusSource {
+  snapshot(): StatusSnapshot;
+  subscribe(listener: (snapshot: StatusSnapshot) => void): () => void;
 }

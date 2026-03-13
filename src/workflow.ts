@@ -1,5 +1,5 @@
 import { watch } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 
 import { Liquid } from "liquidjs";
@@ -14,6 +14,9 @@ const liquid = new Liquid({
   strictFilters: true,
   strictVariables: true
 });
+
+const DEFAULT_WORKFLOW_FILE = "WORKFLOW.md";
+const DEFAULT_WORKFLOWS_DIR = "workflows";
 
 export class WorkflowManager {
   private current: LoadedWorkflow | null = null;
@@ -53,7 +56,8 @@ export class WorkflowManager {
       const next: LoadedWorkflow = {
         definition,
         config,
-        version: ++this.version
+        version: ++this.version,
+        env: this.env
       };
       const changed = !this.current || JSON.stringify(this.current.config) !== JSON.stringify(next.config);
       this.current = next;
@@ -85,8 +89,23 @@ export class WorkflowManager {
   }
 }
 
-export function resolveWorkflowPath(candidate?: string): string {
-  return path.resolve(candidate ?? path.join(process.cwd(), "WORKFLOW.md"));
+export async function resolveWorkflowPaths(candidate?: string): Promise<string[]> {
+  const targetPath = candidate ? path.resolve(candidate) : await resolveDefaultWorkflowTarget(process.cwd());
+  const targetStat = await stat(targetPath).catch((error) => {
+    throw mapWorkflowError(error, targetPath);
+  });
+
+  if (targetStat.isDirectory()) {
+    const workflows = await discoverWorkflowFiles(targetPath);
+    if (workflows.length === 0) {
+      throw new ServiceError("missing_workflow_file", "No workflow files could be found", {
+        workflow_path: targetPath
+      });
+    }
+    return workflows;
+  }
+
+  return [targetPath];
 }
 
 export function parseWorkflowFile(content: string): WorkflowDefinition {
@@ -137,7 +156,7 @@ function mapWorkflowError(error: unknown, workflowPath: string): ServiceError {
   }
 
   if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-    return new ServiceError("missing_workflow_file", "WORKFLOW.md could not be found", {
+    return new ServiceError("missing_workflow_file", "Workflow file could not be found", {
       workflow_path: workflowPath
     });
   }
@@ -151,4 +170,51 @@ function mapWorkflowError(error: unknown, workflowPath: string): ServiceError {
   return new ServiceError("workflow_parse_error", error instanceof Error ? error.message : "Failed to parse workflow file", {
     workflow_path: workflowPath
   });
+}
+
+async function resolveDefaultWorkflowTarget(cwd: string): Promise<string> {
+  const workflowsDir = path.join(cwd, DEFAULT_WORKFLOWS_DIR);
+  try {
+    const workflowsDirStat = await stat(workflowsDir);
+    if (workflowsDirStat.isDirectory()) {
+      return workflowsDir;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  return path.join(cwd, DEFAULT_WORKFLOW_FILE);
+}
+
+async function discoverWorkflowFiles(root: string): Promise<string[]> {
+  const discovered: string[] = [];
+  const queue = [root];
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolutePath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        queue.push(absolutePath);
+        continue;
+      }
+
+      if (entry.isFile() && isWorkflowFilename(entry.name)) {
+        discovered.push(absolutePath);
+      }
+    }
+  }
+
+  return discovered.sort((left, right) => left.localeCompare(right));
+}
+
+function isWorkflowFilename(fileName: string): boolean {
+  return fileName === DEFAULT_WORKFLOW_FILE || fileName.endsWith(".workflow.md");
 }

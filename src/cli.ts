@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 
-import path from "node:path";
-
-import { loadEnvFiles } from "./env";
-import { Orchestrator } from "./orchestrator";
-import { resolveWorkflowPath } from "./workflow";
+import { createRootLoggerFromEnv } from "./logger";
+import { RuntimeManager } from "./runtime";
+import { StatusServer } from "./status-server";
+import { resolveWorkflowPaths } from "./workflow";
 
 async function main(): Promise<void> {
-  const workflowPath = resolveWorkflowPath(process.argv[2]);
-  await loadEnvFiles(path.dirname(workflowPath));
-  const orchestrator = new Orchestrator(workflowPath);
+  const logger = createRootLoggerFromEnv();
+  const workflowPaths = await resolveWorkflowPaths(process.argv[2]);
+  const runtime = new RuntimeManager(workflowPaths, logger);
 
+  let statusServer: StatusServer | null = null;
   const stop = async () => {
-    await orchestrator.stop();
+    await statusServer?.stop().catch(() => undefined);
+    await runtime.stop();
     process.exit(0);
   };
 
@@ -23,7 +24,12 @@ async function main(): Promise<void> {
     void stop();
   });
 
-  await orchestrator.start();
+  await runtime.start();
+  const dashboardConfig = runtime.dashboardConfig();
+  if (dashboardConfig) {
+    statusServer = new StatusServer(runtime, logger.child({ component: "status-server" }));
+    await statusServer.start(dashboardConfig.port, dashboardConfig.host);
+  }
   await new Promise(() => undefined);
 }
 

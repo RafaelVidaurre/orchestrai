@@ -20,7 +20,7 @@ describe("WorkspaceManager", () => {
   it("creates a workspace and runs after_create only once", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "workspace-test-"));
     pathsToRemove.push(root);
-    const manager = new WorkspaceManager(new Logger({}, "error"));
+    const manager = new WorkspaceManager(new Logger({}, { minimumLevel: "error" }));
     const config = configFixture(root, {
       afterCreate: "echo created >> ../after-create.log"
     });
@@ -34,6 +34,19 @@ describe("WorkspaceManager", () => {
     const logContent = await readFile(path.join(root, "after-create.log"), "utf8");
     expect(logContent.trim().split("\n")).toHaveLength(1);
   });
+
+  it("resolves execution path to a nested repository clone", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "workspace-nested-repo-"));
+    pathsToRemove.push(root);
+    const manager = new WorkspaceManager(new Logger({}, { minimumLevel: "error" }));
+    const config = configFixture(root, {
+      afterCreate: "mkdir -p repo/.git"
+    });
+
+    const workspace = await manager.ensureWorkspace(config, "ST-1");
+
+    expect(workspace.runPath).toBe(path.join(workspace.path, "repo"));
+  });
 });
 
 function configFixture(root: string, hookOverrides?: { afterCreate?: string | null }): ServiceConfig {
@@ -43,7 +56,7 @@ function configFixture(root: string, hookOverrides?: { afterCreate?: string | nu
       kind: "linear",
       endpoint: "https://api.linear.app/graphql",
       apiKey: "token",
-      projectSlug: "stori",
+      projectSlug: "project-alpha",
       activeStates: ["Todo", "In Progress"],
       terminalStates: ["Done"]
     },
@@ -74,6 +87,10 @@ function configFixture(root: string, hookOverrides?: { afterCreate?: string | nu
       turnTimeoutMs: 3600000,
       readTimeoutMs: 5000,
       stallTimeoutMs: 300000
+    },
+    server: {
+      port: 4318,
+      host: "127.0.0.1"
     }
   };
 }

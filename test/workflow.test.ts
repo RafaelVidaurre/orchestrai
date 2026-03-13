@@ -1,8 +1,12 @@
+import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { ServiceError } from "../src/errors";
 import type { Issue } from "../src/domain";
-import { parseWorkflowFile, renderPrompt } from "../src/workflow";
+import { parseWorkflowFile, renderPrompt, resolveWorkflowPaths } from "../src/workflow";
 
 describe("workflow parsing", () => {
   it("parses front matter and markdown body", () => {
@@ -24,6 +28,22 @@ Hello {{ issue.identifier }}`);
     const workflow = parseWorkflowFile("Hello {{ issue.unknown_field }}");
 
     await expect(renderPrompt(workflow, issueFixture(), null)).rejects.toBeInstanceOf(ServiceError);
+  });
+
+  it("discovers multiple workflow files from a directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "workflow-discovery-"));
+    try {
+      await mkdir(path.join(root, "nested"), { recursive: true });
+      await writeFile(path.join(root, "alpha.workflow.md"), "Hello");
+      await writeFile(path.join(root, "nested", "WORKFLOW.md"), "World");
+
+      await expect(resolveWorkflowPaths(root)).resolves.toEqual([
+        path.join(root, "alpha.workflow.md"),
+        path.join(root, "nested", "WORKFLOW.md")
+      ]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 
