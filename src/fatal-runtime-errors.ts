@@ -144,7 +144,7 @@ function normalizeFatalProjectError(value: unknown, workflowPath: string): Fatal
 }
 
 function normalizeProvider(value: unknown): AgentProvider | null {
-  return value === "codex" || value === "claude" || value === "grok" ? value : null;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
 function normalizeStage(value: unknown): FatalProjectError["stage"] {

@@ -113,4 +113,97 @@ describe("usage metrics store", () => {
     const empty = await thirdStore.snapshot([workflowPath]);
     expect(empty.projects).toHaveLength(0);
   });
+
+  it("clears persisted usage history while preserving project budgets", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "usage-metrics-clear-"));
+    tempRoots.push(root);
+    const workflowPath = path.join(root, "gamma", "WORKFLOW.md");
+    const observedAt = new Date().toISOString();
+
+    const store = new UsageMetricsStore(root);
+    await store.updateBudget({
+      id: workflowPath,
+      monthlyBudgetUsd: 12
+    });
+    await store.recordUsage({
+      workflowPath,
+      projectSlug: "gamma",
+      displayName: "Gamma",
+      provider: "grok",
+      model: "grok-code-fast-1",
+      observedAt,
+      usage: {
+        input_tokens: 10_000,
+        output_tokens: 2_000,
+        total_tokens: 12_000,
+        cost_usd: 0.03
+      }
+    });
+
+    await store.clearHistory(workflowPath);
+
+    const snapshot = await store.snapshot([workflowPath]);
+    expect(snapshot.projects).toHaveLength(1);
+    expect(snapshot.projects[0]).toMatchObject({
+      workflow_path: workflowPath,
+      lifetime: {
+        total_tokens: 0,
+        cost_usd: 0
+      },
+      current_month: {
+        total_tokens: 0,
+        cost_usd: 0
+      },
+      models: [],
+      budget: {
+        monthly_budget_usd: 12,
+        current_month_cost_usd: 0,
+        status: "within_budget"
+      }
+    });
+  });
+
+  it("clears all tracked usage history across projects", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "usage-metrics-clear-all-"));
+    tempRoots.push(root);
+    const alphaWorkflowPath = path.join(root, "alpha", "WORKFLOW.md");
+    const betaWorkflowPath = path.join(root, "beta", "WORKFLOW.md");
+    const observedAt = new Date().toISOString();
+
+    const store = new UsageMetricsStore(root);
+    await store.recordUsage({
+      workflowPath: alphaWorkflowPath,
+      projectSlug: "alpha",
+      displayName: "Alpha",
+      provider: "codex",
+      model: "gpt-5.2-codex",
+      observedAt,
+      usage: {
+        input_tokens: 2_000,
+        output_tokens: 1_000,
+        total_tokens: 3_000
+      }
+    });
+    await store.recordUsage({
+      workflowPath: betaWorkflowPath,
+      projectSlug: "beta",
+      displayName: "Beta",
+      provider: "grok",
+      model: "grok-code-fast-1",
+      observedAt,
+      usage: {
+        input_tokens: 500,
+        output_tokens: 500,
+        total_tokens: 1_000,
+        cost_usd: 0.01
+      }
+    });
+
+    await store.clearHistory();
+
+    const snapshot = await store.snapshot([alphaWorkflowPath, betaWorkflowPath]);
+    expect(snapshot.projects).toEqual([]);
+    expect(snapshot.totals.current_month.total_tokens).toBe(0);
+    expect(snapshot.totals.lifetime.cost_usd).toBe(0);
+  });
 });

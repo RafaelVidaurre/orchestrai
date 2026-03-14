@@ -86,7 +86,7 @@ describe("GrokApiSession", () => {
       output_tokens: 6,
       total_tokens: 26,
       cache_read_input_tokens: 5,
-      cost_usd: 0.0085
+      cost_usd: 0.00000085
     });
   });
 
@@ -357,6 +357,82 @@ describe("GrokApiSession", () => {
       name: "ServiceError",
       code: "grok_api_status",
       message: "Grok API returned HTTP 403: Your newly created team doesn't have any credits or licenses yet."
+    } satisfies Partial<ServiceError>);
+  });
+
+  it("stops retrying repeated Linear HTTP 400 tool failures within the same turn", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "grok-linear-400-"));
+    tempRoots.push(root);
+
+    const responsePayloads = [
+      {
+        id: "resp_linear_1",
+        status: "in_progress",
+        output: [
+          {
+            type: "function_call",
+            call_id: "call_linear_1",
+            name: "linear_graphql",
+            arguments: JSON.stringify({ query: "query First { viewer { id } }" })
+          }
+        ]
+      },
+      {
+        id: "resp_linear_2",
+        status: "in_progress",
+        output: [
+          {
+            type: "function_call",
+            call_id: "call_linear_2",
+            name: "linear_graphql",
+            arguments: JSON.stringify({ query: "query Second { viewer { id } }" })
+          }
+        ]
+      }
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/responses")) {
+        const payload = responsePayloads.shift();
+        if (!payload) {
+          throw new Error("Unexpected Grok responses call");
+        }
+
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: {
+            "content-type": "application/json"
+          }
+        });
+      }
+
+      if (url === "https://api.linear.app/graphql") {
+        return new Response(JSON.stringify({}), {
+          status: 400,
+          headers: {
+            "content-type": "application/json"
+          }
+        });
+      }
+
+      throw new Error(`Unexpected fetch URL: ${url} body=${String(init?.body ?? "")}`);
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    const session = new GrokApiSession(
+      configFixture(root),
+      root,
+      process.env,
+      new Logger({}, { minimumLevel: "error", writeToStreams: false }),
+      () => undefined
+    );
+
+    await session.start();
+
+    await expect(session.runTurn("Try to update Linear twice")).rejects.toMatchObject({
+      name: "ServiceError",
+      code: "turn_failed",
+      message: expect.stringContaining("linear_graphql is repeatedly failing with HTTP 400")
     } satisfies Partial<ServiceError>);
   });
 });

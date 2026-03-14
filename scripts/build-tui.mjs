@@ -1,7 +1,7 @@
 import { build } from "esbuild";
 
 await build({
-  entryPoints: ["src/tui.tsx"],
+  entryPoints: ["src/tui-entry.tsx"],
   outfile: "dist/tui.mjs",
   bundle: true,
   packages: "external",

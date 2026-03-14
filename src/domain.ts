@@ -66,7 +66,7 @@ export interface ServerConfig {
   host: string;
 }
 
-export type AgentProvider = "codex" | "claude" | "grok";
+export type AgentProvider = string;
 export const CODEX_REASONING_EFFORT_VALUES = ["low", "medium", "high", "xhigh"] as const;
 export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORT_VALUES)[number] | (string & {});
 
@@ -133,6 +133,7 @@ export interface ServiceConfig {
   hooks: HooksConfig;
   agent: AgentConfig;
   runtime: RuntimeConfig;
+  providerConfig?: Record<string, unknown>;
   codex: CodexConfig;
   claude: ClaudeConfig;
   grok: GrokConfig;
@@ -273,6 +274,8 @@ export interface RunningEntry {
   agentInputTokens: number;
   agentOutputTokens: number;
   agentTotalTokens: number;
+  agentCostUsd: number;
+  agentUnpricedTotalTokens: number;
   lastReportedInputTokens: number;
   lastReportedOutputTokens: number;
   lastReportedTotalTokens: number;
@@ -291,7 +294,21 @@ export interface RuntimeTotals {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  costUsd: number;
+  unpricedTotalTokens: number;
   secondsRunning: number;
+}
+
+export interface SessionModelUsage {
+  workflow_path: string;
+  provider: AgentProvider;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  unpriced_total_tokens: number;
+  cost_source: UsageCostSource;
 }
 
 export interface LinearProjectInfo {
@@ -395,6 +412,8 @@ export interface StatusRunningEntry {
   agent_input_tokens: number;
   agent_output_tokens: number;
   agent_total_tokens: number;
+  agent_cost_usd: number;
+  agent_unpriced_total_tokens: number;
   issue_url: string | null;
   recent_activity: AgentActivityEntry[];
   transcript_activity: AgentTranscriptEntry[];
@@ -425,6 +444,7 @@ export interface StatusSnapshot {
   running: StatusRunningEntry[];
   retries: StatusRetryEntry[];
   agent_totals: RuntimeTotals;
+  session_model_usage: SessionModelUsage[];
   recent_events: OperatorEvent[];
 }
 
@@ -463,6 +483,12 @@ export interface ProviderModelCatalog {
   models: AgentModelDescriptor[];
   source: "static" | "dynamic" | "dynamic_fallback";
   warning: string | null;
+}
+
+export interface ProviderDescriptor {
+  id: AgentProvider;
+  displayName: string;
+  defaultModel: string;
 }
 
 export interface ProviderModelQuery {
@@ -653,4 +679,8 @@ export interface UsageMetricsSnapshot {
 export interface ProjectUsageBudgetInput {
   id: string;
   monthlyBudgetUsd: number | null;
+}
+
+export interface UsageHistoryClearInput {
+  id?: string | null;
 }

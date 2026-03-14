@@ -2,23 +2,27 @@
 
 import { useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import { Box, Text, render, useApp, useInput, useStdout } from "ink";
+import path from "node:path";
 
-import { AppController, type AppControlState } from "./app-controller";
 import { openUrlInBrowser } from "./browser";
+import { type ControlPlaneState } from "./control-plane";
 import type { LinearRateLimits, StatusRetryEntry, StatusRunningEntry, StatusSnapshot } from "./domain";
+import { loadEnvFiles } from "./env";
 import { Logger } from "./logger";
+import { createPlatformContext } from "./platform-context";
+import { DashboardServerHost } from "./platform-module";
 import { buildAgentTableLines, buildEventLines, buildRetryLines, formatElapsedShort } from "./tui-layout";
-import { resolveWorkflowContext } from "./workflow";
+import { TuiController } from "./tui-controller";
 
 const REFRESH_INTERVAL_MS = 1000;
 
-function OrchestraiTuiApp(props: { controller: AppController }) {
+function OrchestraiTuiApp(props: { controller: TuiController }) {
   const { controller } = props;
   const { exit } = useApp();
   const { stdout } = useStdout();
   const stdoutColumns = Math.max(stdout.columns ?? 120, 88);
   const [snapshot, setSnapshot] = useState<StatusSnapshot>(() => controller.snapshot());
-  const [controlState, setControlState] = useState<AppControlState>(() => controller.state());
+  const [controlState, setControlState] = useState<ControlPlaneState>(() => controller.state());
   const [notice, setNotice] = useState("Space opens the dashboard in your browser.");
   const [busy, setBusy] = useState(false);
   const [nowMs, setNowMs] = useState(Date.now());
@@ -67,9 +71,11 @@ function OrchestraiTuiApp(props: { controller: AppController }) {
           return;
         }
         setNotice(
-          controller.state().dashboardUrl
-            ? `Dashboard running at ${controller.state().dashboardUrl}`
-            : "Dashboard is not running."
+          controller.state().configuredWorkflowCount === 0
+            ? "No projects configured yet. Press space to open the dashboard and create one."
+            : controller.state().dashboardUrl
+              ? `Dashboard running at ${controller.state().dashboardUrl}`
+              : "Dashboard is not running."
         );
       })
       .catch((error) => {
@@ -211,8 +217,8 @@ function TableBlock(props: { lines: string[]; mutedEmpty?: boolean }) {
 }
 
 async function toggleRuntime(
-  controller: AppController,
-  controlState: AppControlState,
+  controller: TuiController,
+  controlState: ControlPlaneState,
   setBusy: Dispatch<SetStateAction<boolean>>,
   setNotice: Dispatch<SetStateAction<string>>
 ): Promise<void> {
@@ -233,8 +239,8 @@ async function toggleRuntime(
 }
 
 async function toggleDashboard(
-  controller: AppController,
-  controlState: AppControlState,
+  controller: TuiController,
+  controlState: ControlPlaneState,
   setBusy: Dispatch<SetStateAction<boolean>>,
   setNotice: Dispatch<SetStateAction<string>>
 ): Promise<void> {
@@ -255,7 +261,7 @@ async function toggleDashboard(
 }
 
 async function openDashboard(
-  controller: AppController,
+  controller: TuiController,
   setBusy: Dispatch<SetStateAction<boolean>>,
   setNotice: Dispatch<SetStateAction<string>>
 ): Promise<void> {
@@ -272,7 +278,7 @@ async function openDashboard(
 }
 
 async function stopAndExit(
-  controller: AppController,
+  controller: TuiController,
   closing: MutableRefObject<boolean>,
   setBusy: Dispatch<SetStateAction<boolean>>,
   setNotice: Dispatch<SetStateAction<string>>,
@@ -342,19 +348,18 @@ function isNonEmptyString(value: string | null): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-async function main(): Promise<void> {
+export async function startTui(projectsRootArg?: string): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new Error("The OrchestrAI TUI requires an interactive terminal.");
   }
 
-  const workflowContext = await resolveWorkflowContext(process.argv[2], { allowEmpty: true });
+  const projectsRoot = projectsRootArg ? path.resolve(projectsRootArg) : process.cwd();
   const logger = new Logger({}, { writeToStreams: false });
-  const controller = new AppController(workflowContext, logger);
+  const env = { ...process.env };
+  await loadEnvFiles(projectsRoot, env, logger.child({ component: "global-env" }));
+  const platform = await createPlatformContext(projectsRoot, env, logger);
+  const controller = new TuiController(platform.controlPlane, new DashboardServerHost(platform.controlPlane, logger));
   const app = render(<OrchestraiTuiApp controller={controller} />);
   await app.waitUntilExit();
+  await platform.close();
 }
-
-void main().catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-  process.exit(1);
-});

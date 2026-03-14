@@ -1,0 +1,7 @@
+{
+  "name": "@orchestrai/provider-claude",
+  "version": "0.1.0",
+  "private": true,
+  "main": "../../../dist/packages/providers/claude/src/index.js",
+  "types": "../../../dist/packages/providers/claude/src/index.d.ts"
+}

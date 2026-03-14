@@ -1,0 +1,7 @@
+{
+  "name": "@orchestrai/plugin-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "main": "../../dist/packages/plugin-sdk/src/index.js",
+  "types": "../../dist/packages/plugin-sdk/src/index.d.ts"
+}

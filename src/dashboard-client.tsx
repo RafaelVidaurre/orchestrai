@@ -39,6 +39,7 @@ import type {
   GlobalConfigRecord,
   ManagedProjectRecord,
   ProjectUsageMetrics,
+  ProviderDescriptor,
   ProviderModelCatalog,
   ProjectSetupInput,
   ProjectSetupResult,
@@ -115,6 +116,7 @@ function DashboardApp() {
   const [globalFormState, setGlobalFormState] = useState<GlobalFormState>(() => emptyGlobalForm());
   const [projectFormState, setProjectFormState] = useState<ProjectFormState>(() => emptyProjectForm());
   const [createProjectFormState, setCreateProjectFormState] = useState<ProjectFormState>(() => emptyProjectForm());
+  const [availableProviders, setAvailableProviders] = useState<ProviderDescriptor[]>(() => fallbackProviders());
   const [globalModelCatalog, setGlobalModelCatalog] = useState<ProviderModelCatalog>(() => fallbackModelCatalog("codex"));
   const [projectModelCatalog, setProjectModelCatalog] = useState<ProviderModelCatalog>(() => fallbackModelCatalog("codex"));
   const [createProjectModelCatalog, setCreateProjectModelCatalog] = useState<ProviderModelCatalog>(() => fallbackModelCatalog("codex"));
@@ -141,16 +143,17 @@ function DashboardApp() {
     [hydratedProjects, selectedProjectId]
   );
   const selectedSnapshot = useMemo(
-    () => filterSnapshotByProject(effectiveSnapshot, selectedProjectId),
-    [effectiveSnapshot, selectedProjectId]
+    () => filterSnapshotByProject(effectiveSnapshot, selectedProject?.workflowPath ?? null),
+    [effectiveSnapshot, selectedProject?.workflowPath]
   );
   const activeAgents = useMemo(() => sortRunningEntries(selectedSnapshot.running), [selectedSnapshot.running]);
   const queuedRetries = useMemo(() => sortRetryEntries(selectedSnapshot.retries), [selectedSnapshot.retries]);
   const selectedProjectSummary = selectedProject ? summaries.get(selectedProject.workflowPath) ?? null : null;
   const selectedUsageMetrics = useMemo(
-    () => usageMetrics.projects.find((project) => project.workflow_path === selectedProjectId) ?? null,
-    [selectedProjectId, usageMetrics.projects]
+    () => usageMetrics.projects.find((project) => project.workflow_path === selectedProject?.workflowPath) ?? null,
+    [selectedProject?.workflowPath, usageMetrics.projects]
   );
+  const hasConfiguredProjects = hydratedProjects.length > 0;
   useEffect(() => {
     applyThemePreference(themePreference);
   }, [themePreference]);
@@ -245,6 +248,7 @@ function DashboardApp() {
     let active = true;
 
     void refreshSetupContext(setSetupContext, setGlobalFormState);
+    void refreshProviders(setAvailableProviders);
     void refreshProjects(setProjects, setSelectedProjectId);
     void refreshUsageMetrics(setUsageMetrics);
 
@@ -330,7 +334,9 @@ function DashboardApp() {
 
   const headerSummary = selectedProject
     ? buildProjectHeaderSummary(selectedProject, selectedProjectSummary)
-    : `Watching ${effectiveSnapshot.running_count} active agents across ${Math.max(projects.length, effectiveSnapshot.project_count)} projects.`;
+    : hasConfiguredProjects
+      ? `Watching ${effectiveSnapshot.running_count} active agents across ${Math.max(projects.length, effectiveSnapshot.project_count)} projects.`
+      : "No projects configured yet. Create one to enable runtime execution, usage tracking, and per-project controls.";
 
   return (
     <div className="dashboard-shell">
@@ -532,6 +538,44 @@ function DashboardApp() {
           />
         </section>
 
+        {!selectedProject && !hasConfiguredProjects ? (
+          <Surface
+            className="span-two"
+            title="Get started"
+            subtitle="This workspace is initialized, but it does not have any configured projects yet."
+          >
+            <EmptyState
+              title="No projects configured yet"
+              body="Create a project to either clone a repository into managed workspaces or point OrchestrAI at an existing local path."
+            />
+            <div className="empty-state-actions">
+              <button
+                type="button"
+                className="button primary"
+                onClick={() => {
+                  setCreateProjectFormState(emptyProjectForm());
+                  setNotice(idleNotice("Create a project to start managing work from this workspace."));
+                  setSettingsMode("create");
+                }}
+              >
+                <Plus size={16} />
+                <span>Create project</span>
+              </button>
+              <button
+                type="button"
+                className="button ghost"
+                onClick={() => {
+                  setNotice(idleNotice("Shared keys and default runtime values live here."));
+                  setSettingsMode("global");
+                }}
+              >
+                <Cog size={16} />
+                <span>Open global settings</span>
+              </button>
+            </div>
+          </Surface>
+        ) : null}
+
         <section className="layout-grid">
           <Surface
             className="span-two"
@@ -565,6 +609,7 @@ function DashboardApp() {
           >
             <UsageOverview
               selectedProject={selectedProject}
+              selectedSnapshot={selectedSnapshot}
               usageMetrics={usageMetrics}
               selectedUsageMetrics={selectedUsageMetrics}
               setUsageMetrics={setUsageMetrics}
@@ -579,6 +624,7 @@ function DashboardApp() {
           setSettingsMode(null);
         }}
         globalConfig={globalConfig}
+        availableProviders={availableProviders}
         globalFormState={globalFormState}
         globalModelCatalog={globalModelCatalog}
         setGlobalFormState={setGlobalFormState}
@@ -633,6 +679,7 @@ function SettingsDialog(props: {
   mode: SettingsMode;
   onClose: () => void;
   globalConfig: GlobalConfigRecord;
+  availableProviders: ProviderDescriptor[];
   globalFormState: GlobalFormState;
   globalModelCatalog: ProviderModelCatalog;
   setGlobalFormState: Dispatch<SetStateAction<GlobalFormState>>;
@@ -654,6 +701,7 @@ function SettingsDialog(props: {
     mode,
     onClose,
     globalConfig,
+    availableProviders,
     globalFormState,
     globalModelCatalog,
     setGlobalFormState,
@@ -696,6 +744,7 @@ function SettingsDialog(props: {
           {mode === "global" ? (
             <GlobalSettingsForm
               globalConfig={globalConfig}
+              availableProviders={availableProviders}
               formState={globalFormState}
               modelCatalog={globalModelCatalog}
               setFormState={setGlobalFormState}
@@ -711,6 +760,7 @@ function SettingsDialog(props: {
           {mode === "project" && selectedProject ? (
             <ProjectSettingsForm
               mode="update"
+              availableProviders={availableProviders}
               formState={projectFormState}
               modelCatalog={projectModelCatalog}
               setFormState={setProjectFormState}
@@ -727,6 +777,7 @@ function SettingsDialog(props: {
           {mode === "create" ? (
             <ProjectSettingsForm
               mode="create"
+              availableProviders={availableProviders}
               formState={createProjectFormState}
               modelCatalog={createProjectModelCatalog}
               setFormState={setCreateProjectFormState}
@@ -826,6 +877,7 @@ function CodexReasoningEffortField(props: {
 
 function GlobalSettingsForm(props: {
   globalConfig: GlobalConfigRecord;
+  availableProviders: ProviderDescriptor[];
   formState: GlobalFormState;
   modelCatalog: ProviderModelCatalog;
   setFormState: Dispatch<SetStateAction<GlobalFormState>>;
@@ -836,8 +888,19 @@ function GlobalSettingsForm(props: {
   setSetupContext: Dispatch<SetStateAction<DashboardSetupContext | null>>;
   onComplete: () => void;
 }) {
-  const { globalConfig, formState, modelCatalog, setFormState, notice, setNotice, setProjects, setSelectedProjectId, setSetupContext, onComplete } =
-    props;
+  const {
+    globalConfig,
+    availableProviders,
+    formState,
+    modelCatalog,
+    setFormState,
+    notice,
+    setNotice,
+    setProjects,
+    setSelectedProjectId,
+    setSetupContext,
+    onComplete
+  } = props;
 
   return (
     <form
@@ -930,9 +993,11 @@ function GlobalSettingsForm(props: {
               setFormState((current) => updateAgentProvider(current, event.target.value as AgentProvider));
             }}
           >
-            <option value="codex">Codex</option>
-            <option value="claude">Claude CLI</option>
-            <option value="grok">Grok</option>
+            {availableProviders.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.displayName}
+              </option>
+            ))}
           </select>
         </Field>
         <AgentModelField
@@ -1013,6 +1078,7 @@ function GlobalSettingsForm(props: {
 
 function ProjectSettingsForm(props: {
   mode: "create" | "update";
+  availableProviders: ProviderDescriptor[];
   formState: ProjectFormState;
   modelCatalog: ProviderModelCatalog;
   setFormState: Dispatch<SetStateAction<ProjectFormState>>;
@@ -1024,8 +1090,20 @@ function ProjectSettingsForm(props: {
   setSelectedProjectId: Dispatch<SetStateAction<string | null>>;
   onComplete: () => void;
 }) {
-  const { mode, formState, modelCatalog, setFormState, selectedProject, globalConfig, notice, setNotice, setProjects, setSelectedProjectId, onComplete } =
-    props;
+  const {
+    mode,
+    availableProviders,
+    formState,
+    modelCatalog,
+    setFormState,
+    selectedProject,
+    globalConfig,
+    notice,
+    setNotice,
+    setProjects,
+    setSelectedProjectId,
+    onComplete
+  } = props;
 
   return (
     <form
@@ -1149,9 +1227,11 @@ function ProjectSettingsForm(props: {
               setFormState((current) => updateAgentProvider(current, event.target.value as AgentProvider));
             }}
           >
-            <option value="codex">Codex</option>
-            <option value="claude">Claude CLI</option>
-            <option value="grok">Grok</option>
+            {availableProviders.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.displayName}
+              </option>
+            ))}
           </select>
         </Field>
         <ToggleRow
@@ -1614,13 +1694,19 @@ function ProjectOverview(props: {
 
 function UsageOverview(props: {
   selectedProject: ManagedProjectRecord | null;
+  selectedSnapshot: StatusSnapshot;
   usageMetrics: UsageMetricsSnapshot;
   selectedUsageMetrics: ProjectUsageMetrics | null;
   setUsageMetrics: Dispatch<SetStateAction<UsageMetricsSnapshot>>;
 }) {
-  const { selectedProject, usageMetrics, selectedUsageMetrics, setUsageMetrics } = props;
+  const { selectedProject, selectedSnapshot, usageMetrics, selectedUsageMetrics, setUsageMetrics } = props;
   const [budgetDraft, setBudgetDraft] = useState("");
   const [budgetNotice, setBudgetNotice] = useState<StatusNotice>(idleNotice("Budgets compare against tracked current-month spend."));
+  const [historyNotice, setHistoryNotice] = useState<StatusNotice>(
+    idleNotice("Clears persisted spend and token history. Current runtime session totals remain until restart.")
+  );
+  const hasFleetUsageHistory = hasAnyUsageHistory(usageMetrics);
+  const hasSelectedProjectUsageHistory = selectedUsageMetrics ? hasProjectUsageHistory(selectedUsageMetrics) : false;
 
   useEffect(() => {
     setBudgetDraft(
@@ -1629,6 +1715,7 @@ function UsageOverview(props: {
         : ""
     );
     setBudgetNotice(idleNotice("Budgets compare against tracked current-month spend."));
+    setHistoryNotice(idleNotice("Clears persisted spend and token history. Current runtime session totals remain until restart."));
   }, [selectedUsageMetrics?.workflow_path, selectedUsageMetrics?.budget.monthly_budget_usd]);
 
   if (!selectedProject) {
@@ -1639,11 +1726,71 @@ function UsageOverview(props: {
     return (
       <div className="usage-stack">
         <div className="detail-grid">
+          <DetailItem label="Session spend" value={formatUsd(selectedSnapshot.agent_totals.costUsd)} note="Current runtime session" />
+          <DetailItem label="Session tokens" value={formatInteger(selectedSnapshot.agent_totals.totalTokens)} />
           <DetailItem label="Current month spend" value={formatUsd(usageMetrics.totals.current_month.cost_usd)} />
           <DetailItem label="Current month tokens" value={formatInteger(usageMetrics.totals.current_month.total_tokens)} />
           <DetailItem label="Lifetime spend" value={formatUsd(usageMetrics.totals.lifetime.cost_usd)} />
           <DetailItem label="Unpriced tokens" value={formatInteger(usageMetrics.totals.current_month.unpriced_total_tokens)} />
         </div>
+        {hasFleetUsageHistory ? (
+          <div className="usage-actions">
+            <button
+              className="button danger"
+              type="button"
+              disabled={historyNotice.kind === "saving"}
+              onClick={() => {
+                void clearUsageHistory({
+                  project: null,
+                  setHistoryNotice,
+                  setUsageMetrics
+                });
+              }}
+            >
+              Clear all tracked history
+            </button>
+            <div className={joinClassName("notice inline", historyNotice.kind)}>{historyNotice.message}</div>
+          </div>
+        ) : null}
+        {selectedSnapshot.session_model_usage.length > 0 ? (
+          <div className="table-shell">
+            <table className="data-table usage-table">
+              <thead>
+                <tr>
+                  <th>Session model</th>
+                  <th>Provider</th>
+                  <th>Tokens</th>
+                  <th>Spend</th>
+                  <th>Source</th>
+                </tr>
+              </thead>
+              <tbody>
+                {selectedSnapshot.session_model_usage.slice(0, 8).map((model) => (
+                  <tr key={`${model.workflow_path}:${model.provider}:${model.model}`}>
+                    <td>
+                      <div className="row-title">{model.model}</div>
+                      <div className="row-subtitle">{model.workflow_path.split("/").slice(-2, -1)[0] ?? "session"}</div>
+                    </td>
+                    <td className="mono">{model.provider}</td>
+                    <td>
+                      <div className="row-title">{formatInteger(model.total_tokens)}</div>
+                      <div className="row-subtitle">
+                        {formatInteger(model.input_tokens)} in · {formatInteger(model.output_tokens)} out
+                      </div>
+                    </td>
+                    <td>
+                      <div className="row-title">{formatUsd(model.cost_usd)}</div>
+                      <div className="row-subtitle">
+                        {model.unpriced_total_tokens > 0 ? `${formatInteger(model.unpriced_total_tokens)} unpriced tokens` : "Fully priced"}
+                      </div>
+                    </td>
+                    <td className="row-subtitle">{humanizeCostSource(model.cost_source)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
         <div className="table-shell">
           <table className="data-table usage-table">
             <thead>
@@ -1694,6 +1841,15 @@ function UsageOverview(props: {
   return (
     <div className="usage-stack">
       <div className="detail-grid">
+        <DetailItem
+          label="Session spend"
+          value={formatUsd(selectedSnapshot.agent_totals.costUsd)}
+          note={
+            selectedSnapshot.agent_totals.unpricedTotalTokens > 0
+              ? `${formatInteger(selectedSnapshot.agent_totals.unpricedTotalTokens)} unpriced session tokens`
+              : "Current runtime session"
+          }
+        />
         <DetailItem
           label="Current month spend"
           value={formatUsd(selectedUsageMetrics.current_month.cost_usd)}
@@ -1749,6 +1905,72 @@ function UsageOverview(props: {
         </button>
         <div className={joinClassName("notice inline", budgetNotice.kind)}>{budgetNotice.message}</div>
       </form>
+
+      {hasSelectedProjectUsageHistory ? (
+        <div className="usage-actions">
+          <button
+            className="button danger"
+            type="button"
+            disabled={historyNotice.kind === "saving"}
+            onClick={() => {
+              void clearUsageHistory({
+                project: selectedProject,
+                setHistoryNotice,
+                setUsageMetrics
+              });
+            }}
+          >
+            Clear tracked history
+          </button>
+          <div className={joinClassName("notice inline", historyNotice.kind)}>{historyNotice.message}</div>
+        </div>
+      ) : null}
+
+      <div className="table-shell">
+        <table className="data-table usage-table">
+          <thead>
+            <tr>
+              <th>Session model</th>
+              <th>Provider</th>
+              <th>Tokens</th>
+              <th>Spend</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {selectedSnapshot.session_model_usage.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="row-subtitle">
+                  No model usage has been recorded in the current runtime session yet.
+                </td>
+              </tr>
+            ) : (
+              selectedSnapshot.session_model_usage.map((model) => (
+                <tr key={`session:${model.provider}:${model.model}`}>
+                  <td>
+                    <div className="row-title">{model.model}</div>
+                    <div className="row-subtitle">Current runtime session</div>
+                  </td>
+                  <td className="mono">{model.provider}</td>
+                  <td>
+                    <div className="row-title">{formatInteger(model.total_tokens)}</div>
+                    <div className="row-subtitle">
+                      {formatInteger(model.input_tokens)} in · {formatInteger(model.output_tokens)} out
+                    </div>
+                  </td>
+                  <td>
+                    <div className="row-title">{formatUsd(model.cost_usd)}</div>
+                    <div className="row-subtitle">
+                      {model.unpriced_total_tokens > 0 ? `${formatInteger(model.unpriced_total_tokens)} unpriced tokens` : "Fully priced"}
+                    </div>
+                  </td>
+                  <td className="row-subtitle">{humanizeCostSource(model.cost_source)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
 
       <div className="table-shell">
         <table className="data-table usage-table">
@@ -2384,6 +2606,39 @@ async function saveUsageBudget(props: {
   }
 }
 
+async function clearUsageHistory(props: {
+  project: ManagedProjectRecord | null;
+  setHistoryNotice: Dispatch<SetStateAction<StatusNotice>>;
+  setUsageMetrics: Dispatch<SetStateAction<UsageMetricsSnapshot>>;
+}): Promise<void> {
+  const { project, setHistoryNotice, setUsageMetrics } = props;
+  const label = project ? projectLabel(project) : "all projects";
+  const confirmed = window.confirm(
+    project
+      ? `Clear tracked AI usage history for ${label}? Current runtime session totals will remain until the runtime is restarted.`
+      : "Clear tracked AI usage history for all projects? Current runtime session totals will remain until the runtime is restarted."
+  );
+  if (!confirmed) {
+    return;
+  }
+
+  setHistoryNotice({ kind: "saving", message: `Clearing tracked history for ${label}...` });
+
+  try {
+    const nextMetrics = await fetchJson<UsageMetricsSnapshot>("/api/usage-metrics/clear", {
+      method: "POST",
+      body: JSON.stringify(project ? { id: project.id } : {})
+    });
+    setUsageMetrics(nextMetrics);
+    setHistoryNotice({
+      kind: "success",
+      message: project ? "Tracked project usage history cleared." : "Tracked usage history cleared for all projects."
+    });
+  } catch (error) {
+    setHistoryNotice({ kind: "error", message: errorMessage(error) });
+  }
+}
+
 function projectFormToApiInput(formState: ProjectFormState): ProjectSetupInput {
   return {
     displayName: normalizeOptionalText(formState.displayName),
@@ -2424,6 +2679,18 @@ function projectLabel(project: ManagedProjectRecord): string {
 function projectInitial(project: ManagedProjectRecord): string {
   const label = projectLabel(project).trim();
   return label.slice(0, 1).toUpperCase();
+}
+
+function hasAnyUsageHistory(metrics: UsageMetricsSnapshot): boolean {
+  return metrics.projects.some((project) => hasProjectUsageHistory(project));
+}
+
+function hasProjectUsageHistory(metrics: ProjectUsageMetrics): boolean {
+  return (
+    metrics.lifetime.total_tokens > 0 ||
+    metrics.current_month.total_tokens > 0 ||
+    metrics.models.length > 0
+  );
 }
 
 function projectToForm(project: ManagedProjectRecord): ProjectFormState {
@@ -2555,8 +2822,11 @@ function emptySnapshot(): StatusSnapshot {
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
+      costUsd: 0,
+      unpricedTotalTokens: 0,
       secondsRunning: 0
     },
+    session_model_usage: [],
     recent_events: []
   };
 }
@@ -2608,6 +2878,8 @@ function filterSnapshotByProject(snapshot: StatusSnapshot, projectId: string | n
         totals.inputTokens += project.agent_totals.inputTokens;
         totals.outputTokens += project.agent_totals.outputTokens;
         totals.totalTokens += project.agent_totals.totalTokens;
+        totals.costUsd += project.agent_totals.costUsd;
+        totals.unpricedTotalTokens += project.agent_totals.unpricedTotalTokens;
         totals.secondsRunning += project.agent_totals.secondsRunning;
         return totals;
       },
@@ -2615,9 +2887,12 @@ function filterSnapshotByProject(snapshot: StatusSnapshot, projectId: string | n
         inputTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
+        costUsd: 0,
+        unpricedTotalTokens: 0,
         secondsRunning: 0
       }
     ),
+    session_model_usage: snapshot.session_model_usage.filter((model) => model.workflow_path === projectId),
     recent_events: snapshot.recent_events.filter((event) => event.fields?.workflow_path === projectId || !event.fields?.workflow_path)
   };
 }
@@ -2701,6 +2976,23 @@ function fallbackModelCatalog(provider: AgentProvider, warning: string | null = 
     source: "static",
     warning
   };
+}
+
+function fallbackProviders(): ProviderDescriptor[] {
+  return [
+    { id: "claude", displayName: "Claude CLI", defaultModel: "default" },
+    { id: "codex", displayName: "Codex", defaultModel: "gpt-5.2-codex" },
+    { id: "grok", displayName: "Grok", defaultModel: "grok-code-fast-1" }
+  ];
+}
+
+async function refreshProviders(setProviders: Dispatch<SetStateAction<ProviderDescriptor[]>>): Promise<void> {
+  try {
+    const providers = await fetchJson<ProviderDescriptor[]>("/api/providers");
+    setProviders(providers.length > 0 ? providers : fallbackProviders());
+  } catch {
+    setProviders(fallbackProviders());
+  }
 }
 
 async function loadProviderModelCatalog(input: {

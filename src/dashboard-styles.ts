@@ -969,6 +969,14 @@ export const dashboardStyles = `
     gap: 16px;
   }
 
+  .usage-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
   .usage-table .row-title {
     font-size: 0.92rem;
   }
@@ -1104,6 +1112,13 @@ export const dashboardStyles = `
 
   .empty-state {
     padding: 20px 0 6px;
+  }
+
+  .empty-state-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 16px;
   }
 
   .mono {

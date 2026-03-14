@@ -44,6 +44,9 @@ type GrokFunctionCall = {
 
 type ToolExecutionResult = {
   output: string;
+  success: boolean;
+  errorCode?: string;
+  status?: number | null;
 };
 
 export class GrokApiSession {
@@ -125,6 +128,7 @@ export class GrokApiSession {
     let responseId = this.previousResponseId;
     let toolRoundCount = 0;
     let lastUsage: AgentUsageSnapshot | undefined;
+    const repeatedToolFailures = new Map<string, number>();
 
     while (true) {
       if (signal.aborted) {
@@ -198,6 +202,7 @@ export class GrokApiSession {
       const toolOutputs: Array<Record<string, unknown>> = [];
       for (const functionCall of functionCalls) {
         const result = await this.executeToolCall(functionCall, signal);
+        this.assertNoRepeatedRoadblock(functionCall, result, repeatedToolFailures);
         toolOutputs.push({
           type: "function_call_output",
           call_id: functionCall.id,
@@ -292,6 +297,9 @@ export class GrokApiSession {
 
     try {
       let output: string;
+      let resultMeta: Pick<ToolExecutionResult, "success" | "errorCode" | "status"> = {
+        success: true
+      };
       switch (name) {
         case "run_command":
           output = await this.runCommandTool(args, signal);
@@ -315,13 +323,24 @@ export class GrokApiSession {
           output = await this.getGitDiffTool(args, signal);
           break;
         case LINEAR_GRAPHQL_TOOL_NAME:
-          output = (await executeLinearGraphqlTool(this.config, args)).text;
+          {
+            const linearResult = await executeLinearGraphqlTool(this.config, args);
+            output = linearResult.text;
+            resultMeta = {
+              success: linearResult.success,
+              errorCode: linearResult.errorCode,
+              status: linearResult.status
+            };
+          }
           break;
         default:
           this.emit("unsupported_tool_call", {
             message: `unsupported tool call: ${name}`
           });
           return {
+            success: false,
+            errorCode: "unsupported_tool_call",
+            status: null,
             output: JSON.stringify(
               {
                 success: false,
@@ -338,18 +357,23 @@ export class GrokApiSession {
         message: `${name} completed`
       });
       return {
-        output
+        output,
+        ...resultMeta
       };
     } catch (error) {
       const message = `${name} failed: ${errorMessage(error)}`;
+      const serviceError = error instanceof ServiceError ? error : null;
       this.emit("tool_call_failed", {
         message
       });
       return {
+        success: false,
+        errorCode: serviceError?.code,
+        status: extractToolErrorStatus(serviceError?.details),
         output: JSON.stringify(
           {
             success: false,
-            error: error instanceof ServiceError ? error.code : "tool_error",
+            error: serviceError?.code ?? "tool_error",
             message: errorMessage(error)
           },
           null,
@@ -357,6 +381,55 @@ export class GrokApiSession {
         )
       };
     }
+  }
+
+  private assertNoRepeatedRoadblock(
+    functionCall: GrokFunctionCall,
+    result: ToolExecutionResult,
+    repeatedToolFailures: Map<string, number>
+  ): void {
+    if (functionCall.name !== LINEAR_GRAPHQL_TOOL_NAME) {
+      return;
+    }
+
+    if (result.success) {
+      repeatedToolFailures.clear();
+      return;
+    }
+
+    const roadblockStatus =
+      typeof result.status === "number" && Number.isFinite(result.status) && result.status >= 400 && result.status < 500
+        ? result.status
+        : null;
+    const roadblockCode =
+      result.errorCode === "linear_graphql_errors" || result.errorCode === "missing_tracker_api_key"
+        ? result.errorCode
+        : roadblockStatus !== null
+          ? "linear_api_status"
+          : null;
+
+    if (!roadblockCode) {
+      return;
+    }
+
+    const key = `${roadblockCode}:${roadblockStatus ?? "none"}`;
+    const count = (repeatedToolFailures.get(key) ?? 0) + 1;
+    repeatedToolFailures.set(key, count);
+    if (count < 2) {
+      return;
+    }
+
+    if (roadblockStatus !== null) {
+      throw new ServiceError(
+        "turn_failed",
+        `linear_graphql is repeatedly failing with HTTP ${roadblockStatus}. Stop retrying the same request in this turn and treat it as a blocker unless you can correct the query or auth.`
+      );
+    }
+
+    throw new ServiceError(
+      "turn_failed",
+      "linear_graphql is repeatedly failing with the same Linear GraphQL error. Stop retrying the same request in this turn and treat it as a blocker unless you can correct the query."
+    );
   }
 
   private async runCommandTool(args: Record<string, unknown>, signal: AbortSignal): Promise<string> {
@@ -987,8 +1060,17 @@ function extractGrokUsage(usage: unknown): AgentUsageSnapshot | undefined {
     output_tokens: outputTokens,
     total_tokens: totalTokens,
     cache_read_input_tokens: cachedTokens || undefined,
-    cost_usd: costUsdTicks > 0 ? costUsdTicks / 1_000_000 : undefined
+    cost_usd: costUsdTicks > 0 ? costUsdTicks / 10_000_000_000 : undefined
   };
+}
+
+function extractToolErrorStatus(details: unknown): number | null {
+  if (!details || typeof details !== "object" || Array.isArray(details)) {
+    return null;
+  }
+
+  const status = (details as { status?: unknown }).status;
+  return typeof status === "number" && Number.isFinite(status) ? Math.trunc(status) : null;
 }
 
 async function parseResponseJson(response: Response): Promise<GrokResponse> {

@@ -15,6 +15,7 @@ import type {
   ProjectUpdateInput,
   StatusSnapshot,
   StatusSource,
+  UsageHistoryClearInput,
   UsageMetricsSnapshot
 } from "./domain";
 import { Logger } from "./logger";
@@ -220,6 +221,11 @@ export class AppController implements StatusSource {
 
   async updateUsageBudget(input: ProjectUsageBudgetInput): Promise<ProjectUsageMetrics> {
     return this.usageMetricsStore.updateBudget(input);
+  }
+
+  async clearUsageHistory(input: UsageHistoryClearInput): Promise<UsageMetricsSnapshot> {
+    await this.usageMetricsStore.clearHistory(input.id ? path.resolve(input.id) : undefined);
+    return this.usageMetricsStore.snapshot(this.knownWorkflowPaths);
   }
 
   async updateGlobalConfig(input: GlobalConfigInput): Promise<GlobalConfigRecord> {

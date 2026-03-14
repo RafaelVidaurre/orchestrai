@@ -157,6 +157,45 @@ export class UsageMetricsStore {
     });
   }
 
+  async clearHistory(workflowPath?: string): Promise<void> {
+    const absolutePath = workflowPath ? path.resolve(workflowPath) : null;
+    await this.enqueue(async () => {
+      await this.ensureLoaded();
+      const state = this.state!;
+      let changed = false;
+
+      if (absolutePath) {
+        const project = state.projects.find((entry) => entry.workflowPath === absolutePath);
+        if (!project) {
+          return;
+        }
+        changed = clearProjectHistory(project);
+        if (changed && project.monthlyBudgetUsd === null) {
+          state.projects = state.projects.filter((entry) => entry.workflowPath !== absolutePath);
+        }
+      } else {
+        const nextProjects: PersistedProjectUsage[] = [];
+        for (const project of state.projects) {
+          changed = clearProjectHistory(project) || changed;
+          if (project.monthlyBudgetUsd !== null) {
+            nextProjects.push(project);
+          }
+        }
+        if (nextProjects.length !== state.projects.length) {
+          changed = true;
+        }
+        state.projects = nextProjects;
+      }
+
+      if (!changed) {
+        return;
+      }
+
+      state.updatedAt = normalizeTimestamp(undefined);
+      this.scheduleFlush();
+    });
+  }
+
   async flush(): Promise<void> {
     await this.enqueue(async () => {
       await this.ensureLoaded();
@@ -240,7 +279,8 @@ function normalizeProject(project: PersistedProjectUsage): PersistedProjectUsage
     projectSlug: typeof project.projectSlug === "string" ? project.projectSlug : "",
     displayName: typeof project.displayName === "string" && project.displayName.trim().length > 0 ? project.displayName.trim() : null,
     updatedAt: typeof project.updatedAt === "string" ? project.updatedAt : null,
-    latestProvider: project.latestProvider === "codex" || project.latestProvider === "claude" || project.latestProvider === "grok" ? project.latestProvider : null,
+    latestProvider:
+      typeof project.latestProvider === "string" && project.latestProvider.trim().length > 0 ? project.latestProvider.trim() : null,
     latestModel: typeof project.latestModel === "string" && project.latestModel.trim().length > 0 ? project.latestModel.trim() : null,
     monthlyBudgetUsd:
       typeof project.monthlyBudgetUsd === "number" && Number.isFinite(project.monthlyBudgetUsd) && project.monthlyBudgetUsd >= 0
@@ -339,6 +379,25 @@ function ensureModel(models: PersistedModelUsage[], provider: AgentProvider, mod
   models.push(created);
   models.sort(compareModelUsage);
   return created;
+}
+
+function clearProjectHistory(project: PersistedProjectUsage): boolean {
+  const hadHistory =
+    project.updatedAt !== null ||
+    project.latestProvider !== null ||
+    project.latestModel !== null ||
+    !isZeroTotals(project.lifetime) ||
+    project.models.length > 0 ||
+    project.months.length > 0;
+
+  project.updatedAt = null;
+  project.latestProvider = null;
+  project.latestModel = null;
+  project.lifetime = emptyTotals();
+  project.models = [];
+  project.months = [];
+
+  return hadHistory;
 }
 
 function trimOldMonths(project: PersistedProjectUsage): void {

@@ -16,6 +16,7 @@ import type {
   ProjectSetupInput,
   ProjectSetupResult,
   ProjectUpdateInput,
+  UsageHistoryClearInput,
   StatusSnapshot,
   StatusSource,
   UsageMetricsSnapshot
@@ -33,6 +34,7 @@ export interface DashboardProjectSetupService {
   listProviderModels(input: ProviderModelQuery): Promise<ProviderModelCatalog>;
   usageMetrics(): Promise<UsageMetricsSnapshot>;
   updateUsageBudget(input: ProjectUsageBudgetInput): Promise<ProjectUsageMetrics>;
+  clearUsageHistory(input: UsageHistoryClearInput): Promise<UsageMetricsSnapshot>;
   listProjects(): Promise<ManagedProjectRecord[]>;
   createProject(input: ProjectSetupInput): Promise<ProjectSetupResult>;
   updateProject(input: ProjectUpdateInput): Promise<ManagedProjectRecord>;
@@ -174,6 +176,11 @@ export class StatusServer {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/usage-metrics/clear") {
+      await this.handleUsageMetricsClear(request, response);
+      return;
+    }
+
     if (request.method === "PATCH" && url.pathname === "/api/usage-budgets") {
       await this.handleUsageBudgetUpdate(request, response);
       return;
@@ -302,6 +309,28 @@ export class StatusServer {
     } catch (error) {
       response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ error: error instanceof Error ? error.message : "Failed to read usage metrics" }));
+    }
+  }
+
+  private async handleUsageMetricsClear(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    if (!this.projectSetupService) {
+      response.writeHead(503, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: "Project setup is not available in this runtime." }));
+      return;
+    }
+
+    try {
+      const body = await readJsonBody(request);
+      const result = await this.projectSetupService.clearUsageHistory(validateUsageHistoryClearInput(body));
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      const statusCode = error instanceof ServiceError && error.code === "invalid_project_setup" ? 400 : 500;
+      response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: error instanceof Error ? error.message : "Failed to clear usage history" }));
     }
   }
 
@@ -1813,10 +1842,7 @@ function validateProjectSetupInput(value: unknown): ProjectSetupInput {
     xaiApiKey: typeof input.xaiApiKey === "string" ? input.xaiApiKey : null,
     githubRepository: typeof input.githubRepository === "string" ? input.githubRepository : "",
     githubToken: typeof input.githubToken === "string" ? input.githubToken : null,
-    agentProvider:
-      input.agentProvider === "codex" || input.agentProvider === "claude" || input.agentProvider === "grok"
-        ? input.agentProvider
-        : null,
+    agentProvider: typeof input.agentProvider === "string" && input.agentProvider.trim().length > 0 ? input.agentProvider.trim() : null,
     agentModel: typeof input.agentModel === "string" ? input.agentModel : null,
     codexReasoningEffort,
     pollingIntervalMs: typeof input.pollingIntervalMs === "number" ? input.pollingIntervalMs : null,
@@ -1850,10 +1876,7 @@ function validateProjectUpdateInput(value: unknown): ProjectUpdateInput {
     linearApiKey: typeof input.linearApiKey === "string" ? input.linearApiKey : null,
     xaiApiKey: typeof input.xaiApiKey === "string" ? input.xaiApiKey : null,
     githubToken: typeof input.githubToken === "string" ? input.githubToken : null,
-    agentProvider:
-      input.agentProvider === "codex" || input.agentProvider === "claude" || input.agentProvider === "grok"
-        ? input.agentProvider
-        : null,
+    agentProvider: typeof input.agentProvider === "string" && input.agentProvider.trim().length > 0 ? input.agentProvider.trim() : null,
     agentModel: typeof input.agentModel === "string" ? input.agentModel : null,
     codexReasoningEffort,
     pollingIntervalMs: typeof input.pollingIntervalMs === "number" ? input.pollingIntervalMs : null,
@@ -1908,6 +1931,28 @@ function validateProjectUsageBudgetInput(value: unknown): ProjectUsageBudgetInpu
   };
 }
 
+function validateUsageHistoryClearInput(value: unknown): UsageHistoryClearInput {
+  if (value === undefined || value === null || value === "") {
+    return {};
+  }
+
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new ServiceError("invalid_project_setup", "Usage history clear payload must be a JSON object");
+  }
+
+  const input = value as Record<string, unknown>;
+  if (input.id === undefined || input.id === null || input.id === "") {
+    return {};
+  }
+  if (typeof input.id !== "string" || input.id.trim().length === 0) {
+    throw new ServiceError("invalid_project_setup", "Project id must be a non-empty string");
+  }
+
+  return {
+    id: input.id
+  };
+}
+
 function validateOptionalCodexReasoningEffort(value: unknown): string | null {
   if (value === undefined || value === null) {
     return null;
@@ -1931,7 +1976,7 @@ function validateProviderModelQuery(value: unknown): ProviderModelQuery {
   }
 
   const input = value as Record<string, unknown>;
-  if (input.provider !== "codex" && input.provider !== "claude" && input.provider !== "grok") {
+  if (typeof input.provider !== "string" || input.provider.trim().length === 0) {
     throw new ServiceError("invalid_project_setup", "Provider is required");
   }
 

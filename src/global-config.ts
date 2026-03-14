@@ -129,10 +129,7 @@ export function validateGlobalConfigInput(value: unknown): GlobalConfigInput {
   return {
     pollingIntervalMs: typeof input.pollingIntervalMs === "number" ? input.pollingIntervalMs : null,
     maxConcurrentAgents: typeof input.maxConcurrentAgents === "number" ? input.maxConcurrentAgents : null,
-    agentProvider:
-      input.agentProvider === "codex" || input.agentProvider === "claude" || input.agentProvider === "grok"
-        ? input.agentProvider
-        : null,
+    agentProvider: typeof input.agentProvider === "string" && input.agentProvider.trim().length > 0 ? input.agentProvider.trim() : null,
     agentModel: typeof input.agentModel === "string" ? input.agentModel : null,
     codexReasoningEffort,
     linearApiKey: typeof input.linearApiKey === "string" ? input.linearApiKey : null,
@@ -190,5 +187,5 @@ function coerceAgentModel(value: unknown, fallback: string): string {
 }
 
 function coerceAgentProvider(value: unknown, fallback: AgentProvider): AgentProvider {
-  return value === "claude" || value === "codex" || value === "grok" ? value : fallback;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
 }

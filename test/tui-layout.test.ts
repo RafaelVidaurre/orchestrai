@@ -43,6 +43,8 @@ describe("tui layout helpers", () => {
       agent_input_tokens: 1200,
       agent_output_tokens: 340,
       agent_total_tokens: 1540,
+      agent_cost_usd: 0.12,
+      agent_unpriced_total_tokens: 0,
       issue_url: "https://linear.app/issue/MT-101",
       recent_activity: [
         {

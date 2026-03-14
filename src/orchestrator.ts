@@ -13,6 +13,7 @@ import type {
   RetryEntry,
   RunningEntry,
   RuntimeTotals,
+  SessionModelUsage,
   ServiceConfig,
   StatusSnapshot,
   WorkerActivityEvent,
@@ -20,6 +21,7 @@ import type {
   WorkerOutcome
 } from "./domain";
 import { validateDispatchConfig } from "./config";
+import { estimateUsageCost } from "./model-pricing";
 import { Logger } from "./logger";
 import { IssueWorker } from "./runner";
 import { createTrackerClient } from "./tracker";
@@ -59,8 +61,11 @@ export class Orchestrator {
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
+    costUsd: 0,
+    unpricedTotalTokens: 0,
     secondsRunning: 0
   };
+  private readonly sessionModelUsage = new Map<string, SessionModelUsage>();
   private agentRateLimits: unknown = null;
   private linearRateLimits: LinearRateLimits | null = null;
   private linearProject: LinearProjectInfo | null = null;
@@ -228,13 +233,15 @@ export class Orchestrator {
         last_message: entry.lastAgentMessage,
         last_timestamp_ms: entry.lastAgentTimestampMs,
         started_at_ms: entry.startedAtMs,
-        turn_count: entry.turnCount,
-        agent_input_tokens: entry.agentInputTokens,
-        agent_output_tokens: entry.agentOutputTokens,
-        agent_total_tokens: entry.agentTotalTokens,
-        issue_url: entry.issue.url,
-        recent_activity: [...entry.recentActivity],
-        transcript_activity: [...entry.transcriptActivity]
+          turn_count: entry.turnCount,
+          agent_input_tokens: entry.agentInputTokens,
+          agent_output_tokens: entry.agentOutputTokens,
+          agent_total_tokens: entry.agentTotalTokens,
+          agent_cost_usd: entry.agentCostUsd,
+          agent_unpriced_total_tokens: entry.agentUnpricedTotalTokens,
+          issue_url: entry.issue.url,
+          recent_activity: [...entry.recentActivity],
+          transcript_activity: [...entry.transcriptActivity]
       })),
       retries: [...this.retryAttempts.values()].map((entry) => ({
         workflow_path: workflow.config.workflowPath,
@@ -249,6 +256,7 @@ export class Orchestrator {
         error: entry.error
       })),
       agent_totals: { ...this.agentTotals },
+      session_model_usage: [...this.sessionModelUsage.values()].sort(compareSessionModelUsage),
       recent_events: [...this.recentEvents]
     };
   }
@@ -352,6 +360,8 @@ export class Orchestrator {
       agentInputTokens: 0,
       agentOutputTokens: 0,
       agentTotalTokens: 0,
+      agentCostUsd: 0,
+      agentUnpricedTotalTokens: 0,
       lastReportedInputTokens: 0,
       lastReportedOutputTokens: 0,
       lastReportedTotalTokens: 0,
@@ -737,18 +747,43 @@ export class Orchestrator {
         (event.usage.cache_creation_input_tokens ?? 0) - entry.lastReportedCacheCreationInputTokens
       );
       const costDelta = Math.max(0, (event.usage.cost_usd ?? 0) - entry.lastReportedCostUsd);
+      const cost = estimateUsageCost(entry.agentProvider, entry.agentModel, {
+        input_tokens: inputDelta,
+        output_tokens: outputDelta,
+        total_tokens: totalDelta,
+        cache_read_input_tokens: cacheReadDelta || undefined,
+        cache_creation_input_tokens: cacheCreationDelta || undefined,
+        cost_usd: costDelta || undefined
+      });
+      const trackedCostDelta = cost.costUsd ?? 0;
+      const trackedUnpricedDelta = cost.costUsd === null ? totalDelta : 0;
       this.agentTotals.inputTokens += inputDelta;
       this.agentTotals.outputTokens += outputDelta;
       this.agentTotals.totalTokens += totalDelta;
+      this.agentTotals.costUsd = roundUsd(this.agentTotals.costUsd + trackedCostDelta);
+      this.agentTotals.unpricedTotalTokens += trackedUnpricedDelta;
       entry.agentInputTokens = event.usage.input_tokens;
       entry.agentOutputTokens = event.usage.output_tokens;
       entry.agentTotalTokens = event.usage.total_tokens;
+      entry.agentCostUsd = roundUsd(entry.agentCostUsd + trackedCostDelta);
+      entry.agentUnpricedTotalTokens += trackedUnpricedDelta;
       entry.lastReportedInputTokens = event.usage.input_tokens;
       entry.lastReportedOutputTokens = event.usage.output_tokens;
       entry.lastReportedTotalTokens = event.usage.total_tokens;
       entry.lastReportedCacheReadInputTokens = event.usage.cache_read_input_tokens ?? 0;
       entry.lastReportedCacheCreationInputTokens = event.usage.cache_creation_input_tokens ?? 0;
       entry.lastReportedCostUsd = event.usage.cost_usd ?? 0;
+      this.applySessionModelUsage({
+        workflow_path: this.currentWorkflow?.config.workflowPath ?? this.workflowPath,
+        provider: entry.agentProvider,
+        model: entry.agentModel,
+        input_tokens: inputDelta,
+        output_tokens: outputDelta,
+        total_tokens: totalDelta,
+        cost_usd: trackedCostDelta,
+        unpriced_total_tokens: trackedUnpricedDelta,
+        cost_source: cost.costSource
+      });
       if ((inputDelta > 0 || outputDelta > 0 || totalDelta > 0 || costDelta > 0) && this.onUsageDelta) {
         const projectInfo = this.currentProjectInfo();
         void Promise.resolve(
@@ -807,6 +842,32 @@ export class Orchestrator {
 
     entry.recentActivity.unshift(activity);
     entry.recentActivity.splice(Orchestrator.MAX_AGENT_ACTIVITY);
+  }
+
+  private applySessionModelUsage(delta: SessionModelUsage): void {
+    if (
+      delta.input_tokens === 0 &&
+      delta.output_tokens === 0 &&
+      delta.total_tokens === 0 &&
+      delta.cost_usd === 0 &&
+      delta.unpriced_total_tokens === 0
+    ) {
+      return;
+    }
+
+    const key = `${delta.workflow_path}\u0000${delta.provider}\u0000${delta.model}`;
+    const existing = this.sessionModelUsage.get(key);
+    if (!existing) {
+      this.sessionModelUsage.set(key, { ...delta, cost_usd: roundUsd(delta.cost_usd) });
+      return;
+    }
+
+    existing.input_tokens += delta.input_tokens;
+    existing.output_tokens += delta.output_tokens;
+    existing.total_tokens += delta.total_tokens;
+    existing.cost_usd = roundUsd(existing.cost_usd + delta.cost_usd);
+    existing.unpriced_total_tokens += delta.unpriced_total_tokens;
+    existing.cost_source = chooseUsageCostSource(existing.cost_source, delta.cost_source);
   }
 
   private appendTranscriptActivity(entry: RunningEntry, activity: AgentTranscriptEntry): void {
@@ -1176,6 +1237,32 @@ function shouldPersistAgentTranscript(event: AgentRuntimeEvent): boolean {
     "startup_failed",
     "unsupported_tool_call"
   ].includes(event.event);
+}
+
+function chooseUsageCostSource(
+  previous: SessionModelUsage["cost_source"],
+  next: SessionModelUsage["cost_source"]
+): SessionModelUsage["cost_source"] {
+  const rank: Record<SessionModelUsage["cost_source"], number> = {
+    actual: 4,
+    official: 3,
+    estimated_alias: 2,
+    unknown: 1
+  };
+  return rank[next] > rank[previous] ? next : previous;
+}
+
+function compareSessionModelUsage(left: SessionModelUsage, right: SessionModelUsage): number {
+  return (
+    right.cost_usd - left.cost_usd ||
+    right.total_tokens - left.total_tokens ||
+    left.model.localeCompare(right.model) ||
+    left.workflow_path.localeCompare(right.workflow_path)
+  );
+}
+
+function roundUsd(value: number): number {
+  return Math.round(value * 1_000_000) / 1_000_000;
 }
 
 function shouldSurfaceAgentEventAsPrimaryActivity(event: AgentRuntimeEvent, renderedMessage: string): boolean {

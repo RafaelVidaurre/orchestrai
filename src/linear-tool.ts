@@ -32,6 +32,8 @@ interface LinearToolRequest {
 export interface LinearToolResult {
   success: boolean;
   text: string;
+  errorCode?: string;
+  status?: number | null;
 }
 
 export function linearGraphqlToolSpec(): Record<string, unknown> {
@@ -45,7 +47,10 @@ export function linearGraphqlToolSpec(): Record<string, unknown> {
 export async function executeLinearGraphqlTool(config: ServiceConfig, input: unknown): Promise<LinearToolResult> {
   const request = parseLinearToolRequest(input);
   if (!config.tracker.apiKey) {
-    return failure("missing_tracker_api_key");
+    return failure(
+      "missing_tracker_api_key",
+      "OrchestrAI is missing Linear auth. Configure LINEAR_API_KEY before using linear_graphql."
+    );
   }
 
   let response: Response;
@@ -64,16 +69,22 @@ export async function executeLinearGraphqlTool(config: ServiceConfig, input: unk
   }
 
   if (!response.ok) {
-    return failure("linear_api_status", `HTTP ${response.status}`);
+    return failure(
+      "linear_api_status",
+      `Linear GraphQL request failed with HTTP ${response.status}. Do not retry the exact same query unchanged; inspect the query, variables, auth, or schema first.`,
+      response.status
+    );
   }
 
   const payload = (await response.json()) as Record<string, unknown>;
   if (Array.isArray(payload.errors) && payload.errors.length > 0) {
     return {
       success: false,
+      errorCode: "linear_graphql_errors",
       text: JSON.stringify(
         {
           success: false,
+          error: "linear_graphql_errors",
           errors: payload.errors,
           data: payload.data ?? null
         },
@@ -145,14 +156,17 @@ function assertSingleOperation(query: string): void {
   }
 }
 
-function failure(code: string, message?: string): LinearToolResult {
+function failure(code: string, message?: string, status?: number | null): LinearToolResult {
   return {
     success: false,
+    errorCode: code,
+    status: typeof status === "number" ? status : null,
     text: JSON.stringify(
       {
         success: false,
         error: code,
-        message: message ?? null
+        message: message ?? null,
+        status: typeof status === "number" ? status : null
       },
       null,
       2

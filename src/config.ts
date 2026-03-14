@@ -8,6 +8,7 @@ import {
   type WorkflowDefinition
 } from "./domain";
 import { ServiceError } from "./errors";
+import { getActiveProviderRegistry } from "./provider-registry";
 import { DEFAULT_WORKSPACE_ROOT, expandPathLikeValue, normalizeState, resolveSecretValue } from "./utils";
 
 const DEFAULT_LINEAR_ENDPOINT = "https://api.linear.app/graphql";
@@ -143,6 +144,7 @@ export function buildServiceConfig(
       readTimeoutMs,
       stallTimeoutMs
     },
+    providerConfig: asObject(root[provider]),
     codex: {
       command:
         typeof codex.command === "string" && codex.command.trim().length > 0 ? codex.command.trim() : DEFAULT_CODEX_COMMAND,
@@ -194,17 +196,11 @@ export function validateDispatchConfig(config: ServiceConfig): void {
     throw new ServiceError("missing_tracker_project_slug", "Linear project slug is missing");
   }
 
-  if (config.runtime.provider === "codex" && !config.codex.command) {
-    throw new ServiceError("missing_codex_command", "codex.command must be configured");
+  const plugin = getActiveProviderRegistry().maybeGet(config.runtime.provider);
+  if (!plugin) {
+    throw new ServiceError("unknown_provider_plugin", `Unknown provider plugin: ${config.runtime.provider}`);
   }
-
-  if (config.runtime.provider === "claude" && !config.claude.command) {
-    throw new ServiceError("missing_claude_command", "claude.command must be configured");
-  }
-
-  if (config.runtime.provider === "grok" && !config.grok.apiKey) {
-    throw new ServiceError("missing_grok_api_key", "grok.api_key or XAI_API_KEY must be configured");
-  }
+  plugin.validateConfig?.(config);
 
   if (!path.isAbsolute(config.workspace.root)) {
     throw new ServiceError("invalid_workspace_root", "workspace.root must resolve to an absolute path", {
@@ -326,7 +322,7 @@ function applyWorkflowSemanticAdjustments(activeStates: string[], promptTemplate
 }
 
 function coerceAgentProvider(value: unknown, fallback: AgentProvider): AgentProvider {
-  return value === "claude" || value === "codex" || value === "grok" ? value : fallback;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
 }
 
 function resolveRuntimeModel(params: {

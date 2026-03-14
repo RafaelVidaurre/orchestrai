@@ -1,0 +1,7 @@
+{
+  "name": "@orchestrai/provider-grok",
+  "version": "0.1.0",
+  "private": true,
+  "main": "../../../dist/packages/providers/grok/src/index.js",
+  "types": "../../../dist/packages/providers/grok/src/index.d.ts"
+}

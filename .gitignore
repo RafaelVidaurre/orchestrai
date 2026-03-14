@@ -1,9 +1,14 @@
 dist
-node_modules
-coverage
+node_modules/
+coverage/
 .DS_Store
 .orchestrai/
 .env.local
+/orchestrai.config.ts
+/prompts/
+/WORKFLOW.md
+/workflows/
+*.tgz
 .pnp.*
 .yarn/*
 !.yarn/patches

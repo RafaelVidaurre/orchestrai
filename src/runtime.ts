@@ -1,7 +1,15 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { AgentUsageSnapshot, FatalProjectError, LoadedWorkflow, StatusProjectState, StatusSnapshot, StatusSource } from "./domain";
+import type {
+  AgentProvider,
+  AgentUsageSnapshot,
+  FatalProjectError,
+  LoadedWorkflow,
+  StatusProjectState,
+  StatusSnapshot,
+  StatusSource
+} from "./domain";
 import { buildServiceConfig } from "./config";
 import { loadWorkflowEnv } from "./env";
 import {
@@ -36,7 +44,7 @@ interface RuntimeManagerOptions {
     workflowPath: string;
     projectSlug: string;
     displayName: string | null;
-    provider: "codex" | "claude" | "grok";
+    provider: AgentProvider;
     model: string;
     usage: AgentUsageSnapshot;
     observedAt: string;
@@ -433,6 +441,8 @@ function combineSnapshots(snapshots: StatusSnapshot[], projectStates: WorkflowRu
         totals.inputTokens += snapshot.agent_totals.inputTokens;
         totals.outputTokens += snapshot.agent_totals.outputTokens;
         totals.totalTokens += snapshot.agent_totals.totalTokens;
+        totals.costUsd += snapshot.agent_totals.costUsd;
+        totals.unpricedTotalTokens += snapshot.agent_totals.unpricedTotalTokens;
         totals.secondsRunning += snapshot.agent_totals.secondsRunning;
         return totals;
       },
@@ -440,9 +450,20 @@ function combineSnapshots(snapshots: StatusSnapshot[], projectStates: WorkflowRu
         inputTokens: 0,
         outputTokens: 0,
         totalTokens: 0,
+        costUsd: 0,
+        unpricedTotalTokens: 0,
         secondsRunning: 0
       }
     ),
+    session_model_usage: snapshots
+      .flatMap((snapshot) => snapshot.session_model_usage)
+      .sort(
+        (left, right) =>
+          right.cost_usd - left.cost_usd ||
+          right.total_tokens - left.total_tokens ||
+          left.model.localeCompare(right.model) ||
+          left.workflow_path.localeCompare(right.workflow_path)
+      ),
     recent_events: snapshots
       .flatMap((snapshot) => snapshot.recent_events)
       .sort((left, right) => right.timestamp.localeCompare(left.timestamp))

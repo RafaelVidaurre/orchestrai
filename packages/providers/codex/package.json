@@ -1,0 +1,7 @@
+{
+  "name": "@orchestrai/provider-codex",
+  "version": "0.1.0",
+  "private": true,
+  "main": "../../../dist/packages/providers/codex/src/index.js",
+  "types": "../../../dist/packages/providers/codex/src/index.d.ts"
+}
