@@ -126,6 +126,67 @@ describe("buildServiceConfig", () => {
     expect(config.codex.turnSandboxPolicy).toBeNull();
   });
 
+  it("supports Claude runtime selection with shared provider and model defaults", () => {
+    const workflow: WorkflowDefinition = {
+      config: {
+        tracker: {
+          kind: "linear",
+          api_key: "token",
+          project_slug: "project-alpha"
+        },
+        runtime: {
+          provider: "claude"
+        },
+        claude: {
+          permission_mode: "plan",
+          max_budget_usd: 4.5
+        }
+      },
+      prompt_template: "hello"
+    };
+
+    const config = buildServiceConfig("/tmp/workflow.md", workflow, {
+      ORCHESTRAI_DEFAULT_AGENT_MODEL: "claude-sonnet-4-6"
+    });
+
+    expect(config.runtime.provider).toBe("claude");
+    expect(config.runtime.model).toBe("claude-sonnet-4-6");
+    expect(config.claude.command).toBe("claude");
+    expect(config.claude.permissionMode).toBe("plan");
+    expect(config.claude.maxBudgetUsd).toBe(4.5);
+  });
+
+  it("supports Grok runtime selection with XAI credentials and default coding model", () => {
+    const workflow: WorkflowDefinition = {
+      config: {
+        tracker: {
+          kind: "linear",
+          api_key: "token",
+          project_slug: "project-alpha"
+        },
+        runtime: {
+          provider: "grok"
+        },
+        grok: {
+          max_tool_rounds: 8,
+          command_timeout_ms: 45000
+        }
+      },
+      prompt_template: "hello"
+    };
+
+    const config = buildServiceConfig("/tmp/workflow.md", workflow, {
+      XAI_API_KEY: "xai-secret"
+    });
+
+    expect(config.runtime.provider).toBe("grok");
+    expect(config.runtime.model).toBe("grok-code-fast-1");
+    expect(config.grok.apiKey).toBe("xai-secret");
+    expect(config.grok.baseUrl).toBe("https://api.x.ai/v1");
+    expect(config.grok.maxToolRounds).toBe(8);
+    expect(config.grok.commandTimeoutMs).toBe(45000);
+  });
+
   it("respects project.enabled when explicitly disabled", () => {
     const workflow: WorkflowDefinition = {
       config: {

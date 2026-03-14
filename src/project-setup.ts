@@ -52,9 +52,9 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or \`linear_graphql\` tool is available
+## Prerequisite: Linear access is available
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected \`linear_graphql\` tool. If none are present, stop and ask the user to configure Linear.
+The agent should be able to talk to Linear, either via a configured Linear MCP server, injected \`linear_graphql\` tool, or direct API access using \`LINEAR_API_KEY\`. If none are present, stop and ask the user to configure Linear.
 
 ## Default posture
 
@@ -308,14 +308,18 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 - <only include when something was confusing during execution>
 \`\`\`\``;
 
+const DEFAULT_AGENT_PROVIDER = 'codex';
+const DEFAULT_GROK_MODEL = 'grok-code-fast-1';
 const DEFAULT_CODEX_COMMAND =
   'codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server';
-
+const DEFAULT_CLAUDE_COMMAND = 'claude';
+const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
 const DEFAULT_POLL_INTERVAL_MS = 30000;
 const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
 
 type ProjectSecrets = {
   LINEAR_API_KEY?: string;
+  XAI_API_KEY?: string;
   PROJECT_SLUG?: string;
   GITHUB_REPOSITORY?: string;
   GITHUB_TOKEN?: string;
@@ -335,11 +339,12 @@ export async function createProjectSetup(
   await ensureProjectDirectoryAvailable(workflowDirectory);
   await mkdir(workflowDirectory, { recursive: true });
 
-  await writeFile(workflowPath, renderWorkflowMarkdown(normalized), 'utf8');
+  await writeFile(workflowPath, renderWorkflowMarkdown(normalized), "utf8");
   await writeProjectSecrets(envFilePath, {
     PROJECT_SLUG: normalized.projectSlug,
     GITHUB_REPOSITORY: normalized.githubRepository,
     ...(normalized.useGlobalLinearApiKey ? {} : { LINEAR_API_KEY: normalized.linearApiKey ?? undefined }),
+    ...(normalized.useGlobalXaiApiKey ? {} : { XAI_API_KEY: normalized.xaiApiKey ?? undefined }),
     ...(normalized.useGlobalGithubToken ? {} : { GITHUB_TOKEN: normalized.githubToken ?? undefined }),
   });
 
@@ -402,9 +407,29 @@ export async function readProjectSetup(
           ? hooksConfig.github_repository
           : null;
   const usesGlobalLinearApiKey = !(typeof localEnv.LINEAR_API_KEY === 'string' && localEnv.LINEAR_API_KEY.length > 0);
+  const usesGlobalXaiApiKey = !(typeof localEnv.XAI_API_KEY === 'string' && localEnv.XAI_API_KEY.length > 0);
   const usesGlobalGithubToken = !(typeof localEnv.GITHUB_TOKEN === 'string' && localEnv.GITHUB_TOKEN.length > 0);
   const usesGlobalPollingIntervalMs = !hasOwnValue(polling.interval_ms);
   const usesGlobalMaxConcurrentAgents = !hasOwnValue(agent.max_concurrent_agents);
+  const runtimeConfig = asObject(root.runtime);
+  const codexConfig = asObject(root.codex);
+  const claudeConfig = asObject(root.claude);
+  const grokConfig = asObject(root.grok);
+  const configuredProvider = normalizeAgentProvider(runtimeConfig.provider);
+  const usesGlobalAgentProvider = !configuredProvider;
+  const agentProvider = configuredProvider ?? globalConfig.defaults.agentProvider;
+  const configuredModel =
+    typeof runtimeConfig.model === 'string' && runtimeConfig.model.trim().length > 0
+      ? runtimeConfig.model.trim()
+      : agentProvider === 'claude' && typeof claudeConfig.model === 'string' && claudeConfig.model.trim().length > 0
+        ? claudeConfig.model.trim()
+        : agentProvider === 'grok' && typeof grokConfig.model === 'string' && grokConfig.model.trim().length > 0
+          ? grokConfig.model.trim()
+        : typeof codexConfig.model === 'string' && codexConfig.model.trim().length > 0
+          ? codexConfig.model.trim()
+          : '';
+  const usesGlobalAgentModel = !configuredModel.length;
+  const effectiveUsesGlobalAgentModel = usesGlobalAgentModel && !(agentProvider === 'grok' && !globalConfig.defaults.agentModel);
 
   return {
     id: absoluteWorkflowPath,
@@ -425,10 +450,20 @@ export async function readProjectSetup(
     hasLinearApiKey: usesGlobalLinearApiKey
       ? globalConfig.hasLinearApiKey
       : typeof localEnv.LINEAR_API_KEY === 'string' && localEnv.LINEAR_API_KEY.length > 0,
+    hasXaiApiKey: usesGlobalXaiApiKey
+      ? globalConfig.hasXaiApiKey
+      : typeof localEnv.XAI_API_KEY === 'string' && localEnv.XAI_API_KEY.length > 0,
     hasGithubToken: usesGlobalGithubToken
       ? globalConfig.hasGithubToken
       : typeof localEnv.GITHUB_TOKEN === 'string' && localEnv.GITHUB_TOKEN.length > 0,
+    agentProvider,
+    agentModel: effectiveUsesGlobalAgentModel
+      ? globalConfig.defaults.agentModel
+      : configuredModel || (agentProvider === 'grok' ? DEFAULT_GROK_MODEL : ''),
+    usesGlobalAgentProvider,
+    usesGlobalAgentModel: effectiveUsesGlobalAgentModel,
     usesGlobalLinearApiKey,
+    usesGlobalXaiApiKey,
     usesGlobalGithubToken,
     usesGlobalPollingIntervalMs,
     usesGlobalMaxConcurrentAgents,
@@ -461,6 +496,12 @@ export async function updateProjectSetup(
   setNestedValue(root, ['codex', 'turn_sandbox_policy'], {
     type: 'dangerFullAccess',
   });
+  setNestedString(root, ['claude', 'command'], DEFAULT_CLAUDE_COMMAND);
+  setNestedString(root, ['claude', 'permission_mode'], 'bypassPermissions');
+  setNestedString(root, ['grok', 'api_key'], '$XAI_API_KEY');
+  setNestedString(root, ['grok', 'base_url'], DEFAULT_GROK_BASE_URL);
+  setNestedNumber(root, ['grok', 'max_tool_rounds'], 24);
+  setNestedNumber(root, ['grok', 'command_timeout_ms'], 120000);
   setNestedString(root, ['hooks', 'timeout_ms'], '60000');
   setNestedString(root, ['server', 'port'], '-1');
 
@@ -489,6 +530,20 @@ export async function updateProjectSetup(
       normalized.maxConcurrentAgents ?? globalConfig.defaults.maxConcurrentAgents,
     );
   }
+  if (normalized.useGlobalAgentProvider) {
+    deleteNestedValue(root, ['runtime', 'provider']);
+  } else {
+    setNestedString(root, ['runtime', 'provider'], normalized.agentProvider);
+  }
+  if (normalized.useGlobalAgentModel) {
+    deleteNestedValue(root, ['runtime', 'model']);
+    deleteNestedValue(root, ['codex', 'model']);
+    deleteNestedValue(root, ['claude', 'model']);
+  } else if (normalized.agentModel) {
+    setNestedString(root, ['runtime', 'model'], normalized.agentModel);
+    deleteNestedValue(root, ['codex', 'model']);
+    deleteNestedValue(root, ['claude', 'model']);
+  }
 
   await writeWorkflowDefinition(absoluteWorkflowPath, {
     config: root,
@@ -505,6 +560,11 @@ export async function updateProjectSetup(
     delete nextSecrets.LINEAR_API_KEY;
   } else if (normalized.linearApiKey) {
     nextSecrets.LINEAR_API_KEY = normalized.linearApiKey;
+  }
+  if (normalized.useGlobalXaiApiKey) {
+    delete nextSecrets.XAI_API_KEY;
+  } else if (normalized.xaiApiKey) {
+    nextSecrets.XAI_API_KEY = normalized.xaiApiKey;
   }
   if (normalized.useGlobalGithubToken) {
     delete nextSecrets.GITHUB_TOKEN;
@@ -566,8 +626,11 @@ export function createDashboardSetupContext(projectsRoot: string): DashboardSetu
       defaults: {
         pollingIntervalMs: DEFAULT_POLL_INTERVAL_MS,
         maxConcurrentAgents: DEFAULT_MAX_CONCURRENT_AGENTS,
+        agentProvider: DEFAULT_AGENT_PROVIDER,
+        agentModel: '',
       },
       hasLinearApiKey: false,
+      hasXaiApiKey: false,
       hasGithubToken: false,
     },
   };
@@ -583,6 +646,10 @@ function renderWorkflowMarkdown(input: {
   maxConcurrentAgents: number | null;
   useGlobalPollingIntervalMs: boolean;
   useGlobalMaxConcurrentAgents: boolean;
+  agentProvider: string;
+  agentModel: string | null;
+  useGlobalAgentProvider: boolean;
+  useGlobalAgentModel: boolean;
 }): string {
   const frontMatter: Record<string, unknown> = {
     tracker: {
@@ -610,6 +677,7 @@ function renderWorkflowMarkdown(input: {
       max_turns: 20,
       max_retry_backoff_ms: 300000,
     },
+    runtime: {},
     codex: {
       command: DEFAULT_CODEX_COMMAND,
       approval_policy: 'never',
@@ -617,6 +685,16 @@ function renderWorkflowMarkdown(input: {
       turn_sandbox_policy: {
         type: 'dangerFullAccess',
       },
+    },
+    claude: {
+      command: DEFAULT_CLAUDE_COMMAND,
+      permission_mode: 'bypassPermissions',
+    },
+    grok: {
+      api_key: '$XAI_API_KEY',
+      base_url: DEFAULT_GROK_BASE_URL,
+      max_tool_rounds: 24,
+      command_timeout_ms: 120000,
     },
     server: {
       port: -1,
@@ -635,6 +713,17 @@ function renderWorkflowMarkdown(input: {
   if (!input.useGlobalMaxConcurrentAgents && input.maxConcurrentAgents) {
     const agentConfig = asObject(frontMatter.agent);
     agentConfig.max_concurrent_agents = input.maxConcurrentAgents;
+  }
+  if (!input.useGlobalAgentProvider) {
+    const runtimeConfig = asObject(frontMatter.runtime);
+    runtimeConfig.provider = input.agentProvider;
+  }
+  if (!input.useGlobalAgentModel && input.agentModel) {
+    const runtimeConfig = asObject(frontMatter.runtime);
+    runtimeConfig.model = input.agentModel;
+  }
+  if (Object.keys(asObject(frontMatter.runtime)).length === 0) {
+    delete frontMatter.runtime;
   }
 
   return `---\n${YAML.stringify(frontMatter)}---\n${DEFAULT_PROJECT_PROMPT}\n`;
@@ -686,13 +775,22 @@ function normalizeProjectSetupInput(
   input: ProjectSetupInput,
   globalConfig: Awaited<ReturnType<typeof readGlobalConfig>>,
 ) {
+  const requestedAgentProvider = normalizeAgentProvider(input.agentProvider);
+  const requestedAgentModel = normalizeOptionalValue(input.agentModel);
+  const useGlobalAgentProvider =
+    input.useGlobalAgentProvider === true || (input.useGlobalAgentProvider === undefined && !requestedAgentProvider);
+  const requestedUseGlobalAgentModel =
+    input.useGlobalAgentModel === true || (input.useGlobalAgentModel === undefined && !requestedAgentModel);
   const useGlobalLinearApiKey =
     input.useGlobalLinearApiKey === true ||
     (!normalizeOptionalValue(input.linearApiKey) && globalConfig.hasLinearApiKey);
+  const useGlobalXaiApiKey =
+    input.useGlobalXaiApiKey === true || (!normalizeOptionalValue(input.xaiApiKey) && globalConfig.hasXaiApiKey);
   const useGlobalGithubToken = input.useGlobalGithubToken === true || !normalizeOptionalValue(input.githubToken);
   const useGlobalPollingIntervalMs = input.useGlobalPollingIntervalMs !== false;
   const useGlobalMaxConcurrentAgents = input.useGlobalMaxConcurrentAgents !== false;
   const linearApiKey = normalizeOptionalValue(input.linearApiKey);
+  const xaiApiKey = normalizeOptionalValue(input.xaiApiKey);
 
   if (!useGlobalLinearApiKey && !linearApiKey) {
     throw new ServiceError(
@@ -701,10 +799,28 @@ function normalizeProjectSetupInput(
     );
   }
 
+  const resolvedAgentProvider = useGlobalAgentProvider ? globalConfig.defaults.agentProvider : requestedAgentProvider ?? DEFAULT_AGENT_PROVIDER;
+  const fallbackAgentModel =
+    resolvedAgentProvider === 'grok' ? globalConfig.defaults.agentModel || DEFAULT_GROK_MODEL : globalConfig.defaults.agentModel;
+  const useGlobalAgentModel = requestedUseGlobalAgentModel && !(resolvedAgentProvider === 'grok' && !globalConfig.defaults.agentModel);
+  if (resolvedAgentProvider === 'grok' && !useGlobalXaiApiKey && !xaiApiKey) {
+    throw new ServiceError(
+      'invalid_project_setup',
+      'xaiApiKey is required when Grok is selected and no global XAI API key is configured',
+    );
+  }
+  if (resolvedAgentProvider === 'grok' && useGlobalXaiApiKey && !globalConfig.hasXaiApiKey) {
+    throw new ServiceError(
+      'invalid_project_setup',
+      'A global XAI API key is required when Grok is selected with inherited XAI credentials',
+    );
+  }
+
   return {
     displayName: normalizeOptionalValue(input.displayName),
     projectSlug: normalizeRequiredValue(input.projectSlug, 'projectSlug'),
     linearApiKey,
+    xaiApiKey,
     githubRepository: normalizeGitHubRepository(input.githubRepository),
     githubToken: normalizeOptionalValue(input.githubToken),
     pollingIntervalMs: useGlobalPollingIntervalMs
@@ -713,7 +829,12 @@ function normalizeProjectSetupInput(
     maxConcurrentAgents: useGlobalMaxConcurrentAgents
       ? null
       : coercePositiveInteger(input.maxConcurrentAgents, globalConfig.defaults.maxConcurrentAgents),
+    agentProvider: resolvedAgentProvider,
+    agentModel: useGlobalAgentModel ? fallbackAgentModel : requestedAgentModel ?? (resolvedAgentProvider === 'grok' ? DEFAULT_GROK_MODEL : null),
+    useGlobalAgentProvider,
+    useGlobalAgentModel,
     useGlobalLinearApiKey,
+    useGlobalXaiApiKey,
     useGlobalGithubToken,
     useGlobalPollingIntervalMs,
     useGlobalMaxConcurrentAgents,
@@ -724,10 +845,30 @@ function normalizeProjectUpdateInput(
   input: ProjectUpdateInput,
   globalConfig: Awaited<ReturnType<typeof readGlobalConfig>>,
 ) {
+  const useGlobalAgentProvider = input.useGlobalAgentProvider === true;
+  const requestedUseGlobalAgentModel = input.useGlobalAgentModel === true;
   const useGlobalLinearApiKey = input.useGlobalLinearApiKey === true;
+  const useGlobalXaiApiKey = input.useGlobalXaiApiKey === true;
   const useGlobalGithubToken = input.useGlobalGithubToken === true;
   const useGlobalPollingIntervalMs = input.useGlobalPollingIntervalMs === true;
   const useGlobalMaxConcurrentAgents = input.useGlobalMaxConcurrentAgents === true;
+  const resolvedAgentProvider =
+    useGlobalAgentProvider ? globalConfig.defaults.agentProvider : normalizeAgentProvider(input.agentProvider) ?? DEFAULT_AGENT_PROVIDER;
+  const useGlobalAgentModel = requestedUseGlobalAgentModel && !(resolvedAgentProvider === 'grok' && !globalConfig.defaults.agentModel);
+  const xaiApiKey = normalizeOptionalValue(input.xaiApiKey);
+
+  if (resolvedAgentProvider === 'grok' && !useGlobalXaiApiKey && !xaiApiKey) {
+    throw new ServiceError(
+      'invalid_project_setup',
+      'xaiApiKey is required when Grok is selected and no global XAI API key is configured',
+    );
+  }
+  if (resolvedAgentProvider === 'grok' && useGlobalXaiApiKey && !globalConfig.hasXaiApiKey) {
+    throw new ServiceError(
+      'invalid_project_setup',
+      'A global XAI API key is required when Grok is selected with inherited XAI credentials',
+    );
+  }
 
   return {
     id: normalizeRequiredValue(input.id, 'id'),
@@ -735,7 +876,10 @@ function normalizeProjectUpdateInput(
     projectSlug: normalizeRequiredValue(input.projectSlug, 'projectSlug'),
     githubRepository: normalizeGitHubRepository(input.githubRepository),
     linearApiKey: normalizeOptionalValue(input.linearApiKey),
+    xaiApiKey,
     githubToken: normalizeOptionalValue(input.githubToken),
+    agentProvider: resolvedAgentProvider,
+    agentModel: useGlobalAgentModel ? null : normalizeOptionalValue(input.agentModel) ?? (resolvedAgentProvider === 'grok' ? DEFAULT_GROK_MODEL : null),
     pollingIntervalMs: useGlobalPollingIntervalMs
       ? null
       : coercePositiveInteger(input.pollingIntervalMs, globalConfig.defaults.pollingIntervalMs),
@@ -743,7 +887,10 @@ function normalizeProjectUpdateInput(
       ? null
       : coercePositiveInteger(input.maxConcurrentAgents, globalConfig.defaults.maxConcurrentAgents),
     useGlobalLinearApiKey,
+    useGlobalXaiApiKey,
     useGlobalGithubToken,
+    useGlobalAgentProvider,
+    useGlobalAgentModel,
     useGlobalPollingIntervalMs,
     useGlobalMaxConcurrentAgents,
   };
@@ -809,6 +956,10 @@ function normalizeOptionalValue(value: string | null | undefined): string | null
 
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeAgentProvider(value: unknown): 'codex' | 'claude' | 'grok' | null {
+  return value === 'codex' || value === 'claude' || value === 'grok' ? value : null;
 }
 
 function coerceBoolean(value: unknown, fallback: boolean): boolean {

@@ -27,12 +27,22 @@ agent:
   max_concurrent_agents: 10
   max_turns: 20
   max_retry_backoff_ms: 300000
+runtime:
+  provider: codex
 codex:
   command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
     type: dangerFullAccess
+claude:
+  command: claude
+  permission_mode: bypassPermissions
+grok:
+  api_key: $XAI_API_KEY
+  base_url: https://api.x.ai/v1
+  max_tool_rounds: 24
+  command_timeout_ms: 120000
 server:
   port: -1
   host: 127.0.0.1
@@ -71,9 +81,9 @@ Instructions:
 
 Work only in the provided repository copy. Do not touch any other path.
 
-## Prerequisite: Linear MCP or `linear_graphql` tool is available
+## Prerequisite: Linear access is available
 
-The agent should be able to talk to Linear, either via a configured Linear MCP server or injected `linear_graphql` tool. If none are present, stop and ask the user to configure Linear.
+The agent should be able to talk to Linear, either via a configured Linear MCP server, injected `linear_graphql` tool, or direct API access using `LINEAR_API_KEY`. If none are present, stop and ask the user to configure Linear.
 
 ## Default posture
 

@@ -1,14 +1,19 @@
 import path from "node:path";
 
-import type { ServiceConfig, WorkflowDefinition } from "./domain";
+import type { AgentProvider, ServiceConfig, WorkflowDefinition } from "./domain";
 import { ServiceError } from "./errors";
 import { DEFAULT_WORKSPACE_ROOT, expandPathLikeValue, normalizeState, resolveSecretValue } from "./utils";
 
 const DEFAULT_LINEAR_ENDPOINT = "https://api.linear.app/graphql";
 const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"];
 const DEFAULT_TERMINAL_STATES = ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"];
-const DEFAULT_CODEX_COMMAND =
+export const DEFAULT_CODEX_COMMAND =
   "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server";
+export const DEFAULT_CLAUDE_COMMAND = "claude";
+export const DEFAULT_GROK_MODEL = "grok-code-fast-1";
+export const DEFAULT_GROK_BASE_URL = "https://api.x.ai/v1";
+const DEFAULT_AGENT_PROVIDER: AgentProvider = "codex";
+const DEFAULT_AGENT_MODEL = "";
 const DEFAULT_APPROVAL_POLICY = {
   reject: {
     sandbox_approval: true,
@@ -16,6 +21,13 @@ const DEFAULT_APPROVAL_POLICY = {
     mcp_elicitations: true
   }
 } as const;
+const DEFAULT_CLAUDE_PERMISSION_MODE = "bypassPermissions";
+const DEFAULT_GROK_MAX_TOOL_ROUNDS = 24;
+const DEFAULT_GROK_COMMAND_TIMEOUT_MS = 120000;
+const DEFAULT_GROK_MAX_OUTPUT_BYTES = 64 * 1024;
+const DEFAULT_TURN_TIMEOUT_MS = 3600000;
+const DEFAULT_READ_TIMEOUT_MS = 5000;
+const DEFAULT_STALL_TIMEOUT_MS = 300000;
 
 export function buildServiceConfig(
   workflowPath: string,
@@ -29,7 +41,10 @@ export function buildServiceConfig(
   const workspace = asObject(root.workspace);
   const hooks = asObject(root.hooks);
   const agent = asObject(root.agent);
+  const runtime = asObject(root.runtime);
   const codex = asObject(root.codex);
+  const claude = asObject(root.claude);
+  const grok = asObject(root.grok);
   const server = asObject(root.server);
 
   const workspaceRootValue =
@@ -37,6 +52,42 @@ export function buildServiceConfig(
   const activeStates = applyWorkflowSemanticAdjustments(
     coerceStringArray(tracker.active_states, DEFAULT_ACTIVE_STATES),
     workflow.prompt_template
+  );
+  const defaultProvider = coerceAgentProvider(env.ORCHESTRAI_DEFAULT_AGENT_PROVIDER, DEFAULT_AGENT_PROVIDER);
+  const provider = coerceAgentProvider(runtime.provider, defaultProvider);
+  const model = resolveRuntimeModel({ runtime, codex, claude, grok, provider, env });
+  const turnTimeoutMs = coercePositiveInteger(
+    runtime.turn_timeout_ms,
+    coercePositiveInteger(
+      provider === "claude"
+        ? claude.turn_timeout_ms
+        : provider === "grok"
+          ? grok.turn_timeout_ms
+          : codex.turn_timeout_ms,
+      DEFAULT_TURN_TIMEOUT_MS
+    )
+  );
+  const readTimeoutMs = coercePositiveInteger(
+    runtime.read_timeout_ms,
+    coercePositiveInteger(
+      provider === "claude"
+        ? claude.read_timeout_ms
+        : provider === "grok"
+          ? grok.read_timeout_ms
+          : codex.read_timeout_ms,
+      DEFAULT_READ_TIMEOUT_MS
+    )
+  );
+  const stallTimeoutMs = coerceInteger(
+    runtime.stall_timeout_ms,
+    coerceInteger(
+      provider === "claude"
+        ? claude.stall_timeout_ms
+        : provider === "grok"
+          ? grok.stall_timeout_ms
+          : codex.stall_timeout_ms,
+      DEFAULT_STALL_TIMEOUT_MS
+    )
   );
 
   return {
@@ -78,15 +129,42 @@ export function buildServiceConfig(
       maxConcurrentAgentsByState: coerceStateLimitMap(agent.max_concurrent_agents_by_state),
       maxTurns: coercePositiveInteger(agent.max_turns, 20)
     },
+    runtime: {
+      provider,
+      model,
+      turnTimeoutMs,
+      readTimeoutMs,
+      stallTimeoutMs
+    },
     codex: {
       command:
         typeof codex.command === "string" && codex.command.trim().length > 0 ? codex.command.trim() : DEFAULT_CODEX_COMMAND,
       approvalPolicy: codex.approval_policy ?? DEFAULT_APPROVAL_POLICY,
       threadSandbox: codex.thread_sandbox ?? "danger-full-access",
-      turnSandboxPolicy: codex.turn_sandbox_policy ?? null,
-      turnTimeoutMs: coercePositiveInteger(codex.turn_timeout_ms, 3600000),
-      readTimeoutMs: coercePositiveInteger(codex.read_timeout_ms, 5000),
-      stallTimeoutMs: coerceInteger(codex.stall_timeout_ms, 300000)
+      turnSandboxPolicy: codex.turn_sandbox_policy ?? null
+    },
+    claude: {
+      command:
+        typeof claude.command === "string" && claude.command.trim().length > 0 ? claude.command.trim() : DEFAULT_CLAUDE_COMMAND,
+      permissionMode:
+        typeof claude.permission_mode === "string" && claude.permission_mode.trim().length > 0
+          ? claude.permission_mode.trim()
+          : DEFAULT_CLAUDE_PERMISSION_MODE,
+      maxBudgetUsd: coerceNullableNumber(claude.max_budget_usd)
+    },
+    grok: {
+      apiKey: resolveSecretValue(
+        typeof grok.api_key === "string" && grok.api_key.trim().length > 0 ? grok.api_key : "$XAI_API_KEY",
+        env,
+        "XAI_API_KEY"
+      ).trim(),
+      baseUrl:
+        typeof grok.base_url === "string" && grok.base_url.trim().length > 0
+          ? grok.base_url.trim().replace(/\/+$/, "")
+          : DEFAULT_GROK_BASE_URL,
+      maxToolRounds: coercePositiveInteger(grok.max_tool_rounds, DEFAULT_GROK_MAX_TOOL_ROUNDS),
+      commandTimeoutMs: coercePositiveInteger(grok.command_timeout_ms, DEFAULT_GROK_COMMAND_TIMEOUT_MS),
+      maxOutputBytes: coercePositiveInteger(grok.max_output_bytes, DEFAULT_GROK_MAX_OUTPUT_BYTES)
     },
     server: {
       port: coerceInteger(server.port, 4318),
@@ -108,8 +186,16 @@ export function validateDispatchConfig(config: ServiceConfig): void {
     throw new ServiceError("missing_tracker_project_slug", "Linear project slug is missing");
   }
 
-  if (!config.codex.command) {
+  if (config.runtime.provider === "codex" && !config.codex.command) {
     throw new ServiceError("missing_codex_command", "codex.command must be configured");
+  }
+
+  if (config.runtime.provider === "claude" && !config.claude.command) {
+    throw new ServiceError("missing_claude_command", "claude.command must be configured");
+  }
+
+  if (config.runtime.provider === "grok" && !config.grok.apiKey) {
+    throw new ServiceError("missing_grok_api_key", "grok.api_key or XAI_API_KEY must be configured");
   }
 
   if (!path.isAbsolute(config.workspace.root)) {
@@ -145,6 +231,25 @@ function coerceInteger(value: unknown, fallback: number): number {
 function coercePositiveInteger(value: unknown, fallback: number): number {
   const next = coerceInteger(value, fallback);
   return next > 0 ? next : fallback;
+}
+
+function coerceNullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
 }
 
 function coerceStringArray(value: unknown, fallback: string[]): string[] {
@@ -210,4 +315,51 @@ function applyWorkflowSemanticAdjustments(activeStates: string[], promptTemplate
 
     return [...nextStates, requiredState];
   }, activeStates);
+}
+
+function coerceAgentProvider(value: unknown, fallback: AgentProvider): AgentProvider {
+  return value === "claude" || value === "codex" || value === "grok" ? value : fallback;
+}
+
+function resolveRuntimeModel(params: {
+  runtime: Record<string, unknown>;
+  codex: Record<string, unknown>;
+  claude: Record<string, unknown>;
+  grok: Record<string, unknown>;
+  provider: AgentProvider;
+  env: NodeJS.ProcessEnv;
+}): string {
+  const envKey = "ORCHESTRAI_DEFAULT_AGENT_MODEL";
+  const legacyCodexEnvKey = "ORCHESTRAI_DEFAULT_CODEX_MODEL";
+
+  if (typeof params.runtime.model === "string" && params.runtime.model.trim().length > 0) {
+    return resolveSecretValue(params.runtime.model, params.env, envKey).trim();
+  }
+
+  if (params.provider === "codex" && typeof params.codex.model === "string" && params.codex.model.trim().length > 0) {
+    return resolveSecretValue(params.codex.model, params.env, legacyCodexEnvKey).trim();
+  }
+
+  if (params.provider === "claude" && typeof params.claude.model === "string" && params.claude.model.trim().length > 0) {
+    return resolveSecretValue(params.claude.model, params.env, envKey).trim();
+  }
+
+  if (params.provider === "grok" && typeof params.grok.model === "string" && params.grok.model.trim().length > 0) {
+    return resolveSecretValue(params.grok.model, params.env, envKey).trim();
+  }
+
+  const fromAgentDefault = resolveSecretValue(`$${envKey}`, params.env, envKey).trim();
+  if (fromAgentDefault) {
+    return fromAgentDefault;
+  }
+
+  if (params.provider === "codex") {
+    return resolveSecretValue(`$${legacyCodexEnvKey}`, params.env, legacyCodexEnvKey).trim() || DEFAULT_AGENT_MODEL;
+  }
+
+  if (params.provider === "grok") {
+    return DEFAULT_GROK_MODEL;
+  }
+
+  return DEFAULT_AGENT_MODEL;
 }

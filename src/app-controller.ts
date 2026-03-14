@@ -66,9 +66,12 @@ export class AppController implements StatusSource {
         envFilePath: path.join(path.resolve(workflowContext.projectsRoot), ".env.local"),
         defaults: {
           pollingIntervalMs: 30000,
-          maxConcurrentAgents: 10
+          maxConcurrentAgents: 10,
+          agentProvider: "codex",
+          agentModel: ""
         },
         hasLinearApiKey: false,
+        hasXaiApiKey: false,
         hasGithubToken: false
       }
     };

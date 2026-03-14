@@ -335,7 +335,16 @@ const SUMMARY_NOTIFICATION_PREFIXES = [
   "validation command finished",
   "edited ",
   "rate limits updated",
-  "linear mcp"
+  "linear mcp",
+  "claude initialized",
+  "claude rate limit",
+  "grok rate limit",
+  "assistant update:",
+  "using tool:",
+  "reading file:",
+  "editing file:",
+  "searching files:",
+  "searching text:"
 ] as const;
 
 const TRANSCRIPT_NOTIFICATION_PREFIXES = [
@@ -351,6 +360,12 @@ const TRANSCRIPT_NOTIFICATION_PREFIXES = [
   "command completed",
   "command output streaming",
   "file change output streaming",
+  "assistant update:",
+  "using tool:",
+  "reading file:",
+  "editing file:",
+  "searching files:",
+  "searching text:",
   "reasoning update",
   "reasoning streaming",
   "agent message streaming",
@@ -389,6 +404,10 @@ export function classifyHumanizedCodexMessage(
     message.startsWith("command completed") ||
     message.startsWith("running command:") ||
     message.startsWith("finished command:") ||
+    message.startsWith("reading file:") ||
+    message.startsWith("editing file:") ||
+    message.startsWith("searching files:") ||
+    message.startsWith("searching text:") ||
     message.startsWith("submitting pull request") ||
     message.startsWith("pull request submitted") ||
     message.startsWith("pushing branch updates") ||
@@ -408,6 +427,7 @@ export function classifyHumanizedCodexMessage(
 
   if (
     message.startsWith("dynamic tool call") ||
+    message.startsWith("using tool:") ||
     message.startsWith("reading Linear context") ||
     message.startsWith("updating workpad in Linear") ||
     message.startsWith("changing task status in Linear") ||
@@ -431,6 +451,18 @@ export function classifyHumanizedCodexMessage(
     return "system";
   }
 
+  if (
+    message.startsWith("claude initialized") ||
+    message.startsWith("claude rate limit") ||
+    message.startsWith("grok rate limit")
+  ) {
+    return "system";
+  }
+
+  if (message.startsWith("assistant update:")) {
+    return "message";
+  }
+
   return "status";
 }
 
@@ -445,7 +477,7 @@ export function normalizeTranscriptMessage(
 
   switch (kind) {
     case "message":
-      return stripStreamingPrefix(trimmed, "agent message streaming");
+      return stripStreamingPrefix(trimmed, "agent message streaming", "assistant update");
     case "reasoning":
       return stripStreamingPrefix(trimmed, "reasoning update", "reasoning streaming");
     default:

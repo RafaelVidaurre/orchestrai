@@ -134,7 +134,7 @@ function OrchestraiTuiApp(props: { controller: AppController }) {
         <KeyValueLine label="Session" value={formatElapsedShort(nowMs - startedAtMs.current)} valueColor="magentaBright" />
         <KeyValueLine
           label="Tokens"
-          value={`in ${formatInteger(snapshot.codex_totals.inputTokens)} | out ${formatInteger(snapshot.codex_totals.outputTokens)} | total ${formatInteger(snapshot.codex_totals.totalTokens)}`}
+          value={`in ${formatInteger(snapshot.agent_totals.inputTokens)} | out ${formatInteger(snapshot.agent_totals.outputTokens)} | total ${formatInteger(snapshot.agent_totals.totalTokens)}`}
           valueColor="yellow"
         />
         <KeyValueLine label="Dashboard" value={controlState.dashboardUrl ?? "stopped"} valueColor="cyan" />

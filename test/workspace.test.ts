@@ -83,14 +83,30 @@ function configFixture(root: string, hookOverrides?: { afterCreate?: string | nu
       maxConcurrentAgentsByState: {},
       maxTurns: 20
     },
+    runtime: {
+      provider: "codex",
+      model: "o4-mini",
+      turnTimeoutMs: 3600000,
+      readTimeoutMs: 5000,
+      stallTimeoutMs: 300000
+    },
     codex: {
       command: "codex app-server",
       approvalPolicy: "never",
       threadSandbox: "workspace-write",
-      turnSandboxPolicy: null,
-      turnTimeoutMs: 3600000,
-      readTimeoutMs: 5000,
-      stallTimeoutMs: 300000
+      turnSandboxPolicy: null
+    },
+    claude: {
+      command: "claude",
+      permissionMode: "bypassPermissions",
+      maxBudgetUsd: null
+    },
+    grok: {
+      apiKey: "xai-test",
+      baseUrl: "https://api.x.ai/v1",
+      maxToolRounds: 24,
+      commandTimeoutMs: 120000,
+      maxOutputBytes: 65536
     },
     server: {
       port: 4318,

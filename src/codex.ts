@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 
-import type { CodexRuntimeEvent, ServiceConfig } from "./domain";
+import type { AgentRuntimeEvent, ServiceConfig } from "./domain";
 import { humanizeCodexMethod, humanizeDynamicToolEvent } from "./codex-humanize";
 import { buildAutoUserInputResult, summarizeUserInputRequest } from "./codex-user-input";
 import { ServiceError } from "./errors";
@@ -42,6 +42,7 @@ export class CodexAppServerSession {
   private stdoutBuffer = "";
   private stderrBuffer = "";
   private requestId = 0;
+  private threadId: string | null = null;
   private readonly pendingRequests = new Map<number | string, PendingRequest>();
   private currentTurn: CurrentTurn | null = null;
   private exitPromise: Promise<void> | null = null;
@@ -52,11 +53,12 @@ export class CodexAppServerSession {
     private readonly workspacePath: string,
     private readonly env: NodeJS.ProcessEnv,
     private readonly logger: Logger,
-    private readonly onEvent: (event: CodexRuntimeEvent) => void
+    private readonly onEvent: (event: AgentRuntimeEvent) => void
   ) {}
 
-  async start(): Promise<{ threadId: string; pid: number | null }> {
-    this.child = spawn("bash", ["-lc", this.config.codex.command], {
+  async start(): Promise<void> {
+    const command = injectCodexModel(this.config.codex.command, this.config.runtime.model);
+    this.child = spawn("bash", ["-lc", command], {
       cwd: this.workspacePath,
       env: this.env,
       stdio: ["pipe", "pipe", "pipe"]
@@ -111,11 +113,8 @@ export class CodexAppServerSession {
       if (!threadId) {
         throw new ServiceError("response_error", "thread/start did not return a thread id");
       }
-
-      return {
-        threadId,
-        pid: this.child.pid ?? null
-      };
+      this.threadId = threadId;
+      return;
     } catch (error) {
       this.emit("startup_failed", {
         message: error instanceof Error ? error.message : "startup failed"
@@ -157,7 +156,12 @@ export class CodexAppServerSession {
     }
   }
 
-  async runTurn(threadId: string, prompt: string): Promise<{ threadId: string; turnId: string }> {
+  async runTurn(prompt: string): Promise<void> {
+    if (!this.threadId) {
+      throw new ServiceError("response_error", "Codex thread is not initialized");
+    }
+    const threadId = this.threadId;
+
     const result = (await this.request("turn/start", {
       threadId,
       cwd: this.workspacePath,
@@ -186,7 +190,7 @@ export class CodexAppServerSession {
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new ServiceError("turn_timeout", "Codex turn exceeded configured timeout"));
-      }, this.config.codex.turnTimeoutMs);
+      }, this.config.runtime.turnTimeoutMs);
 
       this.currentTurn = {
         threadId,
@@ -204,8 +208,6 @@ export class CodexAppServerSession {
     }).finally(() => {
       this.currentTurn = null;
     });
-
-    return { threadId, turnId };
   }
 
   async stop(): Promise<void> {
@@ -594,7 +596,7 @@ export class CodexAppServerSession {
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new ServiceError("response_timeout", `Timed out waiting for ${method} response`));
-      }, this.config.codex.readTimeoutMs);
+      }, this.config.runtime.readTimeoutMs);
 
       this.pendingRequests.set(id, { resolve, reject, timer });
       this.send({
@@ -651,16 +653,49 @@ export class CodexAppServerSession {
   }
 
   private emit(
-    event: CodexRuntimeEvent["event"],
-    payload: Omit<CodexRuntimeEvent, "event" | "timestamp" | "codexAppServerPid">
+    event: AgentRuntimeEvent["event"],
+    payload: Omit<AgentRuntimeEvent, "event" | "timestamp" | "provider" | "agentProcessPid">
   ): void {
     this.onEvent({
+      provider: "codex",
       event,
       timestamp: new Date().toISOString(),
-      codexAppServerPid: this.child?.pid ?? null,
+      agentProcessPid: this.child?.pid ?? null,
       ...payload
     });
   }
+}
+
+function injectCodexModel(command: string, model: string): string {
+  const trimmedModel = model.trim();
+  if (!trimmedModel) {
+    return command;
+  }
+
+  const hasExplicitModel =
+    /(^|\s)--config\s+model=/.test(command) ||
+    /(^|\s)--model(\s|=)/.test(command) ||
+    /(^|\s)-m(\s|=)/.test(command);
+  if (hasExplicitModel) {
+    return command;
+  }
+
+  const modelArg = `--config model=${quoteCliValue(trimmedModel)}`;
+  const appServerMatch = command.match(/(^|\s)(app-server)(?=\s|$)/);
+  if (!appServerMatch || appServerMatch.index === undefined) {
+    return `${command} ${modelArg}`;
+  }
+
+  const insertionIndex = appServerMatch.index + appServerMatch[1].length;
+  return `${command.slice(0, insertionIndex)}${modelArg} ${command.slice(insertionIndex)}`.trim();
+}
+
+function quoteCliValue(value: string): string {
+  if (/^[A-Za-z0-9._:/-]+$/.test(value)) {
+    return value;
+  }
+
+  return JSON.stringify(value);
 }
 
 function resolveTurnSandboxPolicy(config: ServiceConfig, workspacePath: string): unknown {

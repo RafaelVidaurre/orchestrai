@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 
 import type {
+  AgentProvider,
   AgentTranscriptEntry,
   DashboardBootstrap,
   DashboardSetupContext,
@@ -56,18 +57,28 @@ type StatusNotice = {
 type GlobalFormState = {
   pollingIntervalMs: string;
   maxConcurrentAgents: string;
+  agentProvider: AgentProvider;
+  agentModel: string;
   linearApiKey: string;
+  xaiApiKey: string;
   githubToken: string;
   clearLinearApiKey: boolean;
+  clearXaiApiKey: boolean;
   clearGithubToken: boolean;
 };
 type ProjectFormState = {
   displayName: string;
   projectSlug: string;
   githubRepository: string;
+  agentProvider: AgentProvider;
+  agentModel: string;
   linearApiKey: string;
+  xaiApiKey: string;
   githubToken: string;
+  useGlobalAgentProvider: boolean;
+  useGlobalAgentModel: boolean;
   useGlobalLinearApiKey: boolean;
+  useGlobalXaiApiKey: boolean;
   useGlobalGithubToken: boolean;
   pollingIntervalMs: string;
   maxConcurrentAgents: string;
@@ -411,7 +422,7 @@ function DashboardApp() {
           />
           <StatCard
             label="Tokens"
-            value={formatInteger(selectedSnapshot.codex_totals.totalTokens)}
+            value={formatInteger(selectedSnapshot.agent_totals.totalTokens)}
             note="Total consumed in focus scope"
             icon={<Minus size={16} />}
           />
@@ -671,6 +682,21 @@ function GlobalSettingsForm(props: {
             }}
           />
         </Field>
+        <Field label={`Shared XAI API key${globalConfig.hasXaiApiKey ? " (leave blank to keep)" : ""}`} className="full">
+          <input
+            className="input"
+            type="password"
+            value={formState.xaiApiKey}
+            placeholder={globalConfig.hasXaiApiKey ? "Keep existing key" : "xai-..."}
+            onChange={(event) => {
+              setFormState((current) => ({
+                ...current,
+                xaiApiKey: event.target.value,
+                clearXaiApiKey: false
+              }));
+            }}
+          />
+        </Field>
         <Field label={`Shared GitHub token${globalConfig.hasGithubToken ? " (leave blank to keep)" : ""}`} className="full">
           <input
             className="input"
@@ -682,6 +708,35 @@ function GlobalSettingsForm(props: {
                 ...current,
                 githubToken: event.target.value,
                 clearGithubToken: false
+              }));
+            }}
+          />
+        </Field>
+        <Field label="Shared agent provider">
+          <select
+            className="input"
+            value={formState.agentProvider}
+            onChange={(event) => {
+              setFormState((current) => ({
+                ...current,
+                agentProvider: event.target.value as AgentProvider
+              }));
+            }}
+          >
+            <option value="codex">Codex</option>
+            <option value="claude">Claude CLI</option>
+            <option value="grok">Grok</option>
+          </select>
+        </Field>
+        <Field label="Shared agent model">
+          <input
+            className="input"
+            value={formState.agentModel}
+            placeholder="inherit project default"
+            onChange={(event) => {
+              setFormState((current) => ({
+                ...current,
+                agentModel: event.target.value
               }));
             }}
           />
@@ -698,6 +753,19 @@ function GlobalSettingsForm(props: {
                 ...current,
                 clearLinearApiKey: checked,
                 linearApiKey: checked ? "" : current.linearApiKey
+              }));
+            }}
+          />
+        ) : null}
+        {globalConfig.hasXaiApiKey ? (
+          <ToggleRow
+            checked={formState.clearXaiApiKey}
+            label="Clear shared XAI API key"
+            onCheckedChange={(checked) => {
+              setFormState((current) => ({
+                ...current,
+                clearXaiApiKey: checked,
+                xaiApiKey: checked ? "" : current.xaiApiKey
               }));
             }}
           />
@@ -812,6 +880,27 @@ function ProjectSettingsForm(props: {
             }}
           />
         ) : null}
+        <Field label="XAI API key" className="full">
+          <input
+            className="input"
+            type="password"
+            value={formState.xaiApiKey}
+            disabled={formState.useGlobalXaiApiKey}
+            placeholder={formState.useGlobalXaiApiKey ? "Using shared XAI key" : "Optional unless Grok"}
+            onChange={(event) => {
+              setFormState((current) => ({ ...current, xaiApiKey: event.target.value }));
+            }}
+          />
+        </Field>
+        {globalConfig.hasXaiApiKey ? (
+          <ToggleRow
+            checked={formState.useGlobalXaiApiKey}
+            label="Use shared XAI API key"
+            onCheckedChange={(checked) => {
+              setFormState((current) => ({ ...current, useGlobalXaiApiKey: checked }));
+            }}
+          />
+        ) : null}
         <Field label="GitHub token" className="full">
           <input
             className="input"
@@ -833,6 +922,45 @@ function ProjectSettingsForm(props: {
             }}
           />
         ) : null}
+        <Field label="Agent provider">
+          <select
+            className="input"
+            value={formState.agentProvider}
+            disabled={formState.useGlobalAgentProvider}
+            onChange={(event) => {
+              setFormState((current) => ({ ...current, agentProvider: event.target.value as AgentProvider }));
+            }}
+          >
+            <option value="codex">Codex</option>
+            <option value="claude">Claude CLI</option>
+            <option value="grok">Grok</option>
+          </select>
+        </Field>
+        <ToggleRow
+          checked={formState.useGlobalAgentProvider}
+          label="Use shared agent provider"
+          onCheckedChange={(checked) => {
+            setFormState((current) => ({ ...current, useGlobalAgentProvider: checked }));
+          }}
+        />
+        <Field label="Agent model">
+          <input
+            className="input"
+            value={formState.agentModel}
+            disabled={formState.useGlobalAgentModel}
+            placeholder={formState.useGlobalAgentModel ? "Using shared model" : "Project model override"}
+            onChange={(event) => {
+              setFormState((current) => ({ ...current, agentModel: event.target.value }));
+            }}
+          />
+        </Field>
+        <ToggleRow
+          checked={formState.useGlobalAgentModel}
+          label="Use shared agent model"
+          onCheckedChange={(checked) => {
+            setFormState((current) => ({ ...current, useGlobalAgentModel: checked }));
+          }}
+        />
         <Field label="Polling interval">
           <input
             className="input"
@@ -996,7 +1124,7 @@ function AgentTable(props: {
                     <div className="row-subtitle">{entry.state}</div>
                   </td>
                   <td className="mono">{formatElapsedShort(props.nowMs - entry.started_at_ms)}</td>
-                  <td className="mono">{formatInteger(entry.codex_total_tokens)}</td>
+                  <td className="mono">{formatInteger(entry.agent_total_tokens)}</td>
                   <td>
                     <div className="activity-primary">{entry.activity}</div>
                     <div className="activity-secondary">{secondary}</div>
@@ -1063,7 +1191,7 @@ function AgentInlineTranscript(props: { entry: StatusRunningEntry; nowMs: number
         <div className="agent-detail-meta">
           <span className={joinClassName("phase-badge", agentState.tone)}>{agentState.label}</span>
           <span className="meta-chip">
-            <span>{formatInteger(entry.codex_total_tokens)} tokens</span>
+            <span>{formatInteger(entry.agent_total_tokens)} tokens</span>
           </span>
           <span className="meta-chip">
             <span>{formatElapsedShort(props.nowMs - entry.started_at_ms)} running</span>
@@ -1073,7 +1201,7 @@ function AgentInlineTranscript(props: { entry: StatusRunningEntry; nowMs: number
 
       <div className="agent-detail-stream">
         {entry.transcript_activity.length === 0 ? (
-          <EmptyState title="No transcript yet" body="This agent has not emitted detailed Codex activity yet." />
+          <EmptyState title="No transcript yet" body="This agent has not emitted detailed runtime activity yet." />
         ) : (
           buildTranscriptRenderBlocks(entry.transcript_activity.slice(0, 80)).map((block, index) => (
             block.type === "command-group" ? (
@@ -1192,6 +1320,18 @@ function ProjectOverview(props: {
       <DetailItem
         label="Linear key"
         value={selectedProject.usesGlobalLinearApiKey ? "Inherited" : selectedProject.hasLinearApiKey ? "Project override" : "Missing"}
+      />
+      <DetailItem
+        label="XAI key"
+        value={
+          selectedProject.agentProvider !== "grok"
+            ? "Optional"
+            : selectedProject.usesGlobalXaiApiKey
+              ? "Inherited"
+              : selectedProject.hasXaiApiKey
+                ? "Project override"
+                : "Missing"
+        }
       />
       <DetailItem
         label="GitHub token"
@@ -1337,7 +1477,7 @@ function buildProjectHeaderSummary(
     return "This project is configured but currently stopped.";
   }
 
-  return `${summary?.running_count ?? 0} active agents · ${summary?.retry_count ?? 0} queued retries · ${formatInteger(summary?.codex_totals.totalTokens ?? 0)} total tokens`;
+  return `${summary?.running_count ?? 0} active agents · ${summary?.retry_count ?? 0} queued retries · ${formatInteger(summary?.agent_totals.totalTokens ?? 0)} total tokens`;
 }
 
 function renderRateLimitSummary(summary: StatusSnapshot["projects"][number] | null): string {
@@ -1476,8 +1616,12 @@ function describeOperatorEvent(event: StatusSnapshot["recent_events"][number]): 
     return `Retry scheduled in ${formatElapsedShort(Number(event.fields?.delay_ms ?? 0))}`;
   }
 
-  if (event.message.startsWith("codex ")) {
-    return event.message.replace(/^codex /, "").replaceAll("_", " ");
+  if (
+    event.message.startsWith("codex ") ||
+    event.message.startsWith("claude ") ||
+    event.message.startsWith("grok ")
+  ) {
+    return event.message.replace(/^(codex|claude|grok) /, "").replaceAll("_", " ");
   }
 
   return event.message;
@@ -1559,9 +1703,13 @@ async function saveGlobalSettings(props: {
     const body = {
       pollingIntervalMs: parseOptionalInteger(formState.pollingIntervalMs),
       maxConcurrentAgents: parseOptionalInteger(formState.maxConcurrentAgents),
+      agentProvider: formState.agentProvider,
+      agentModel: normalizeOptionalText(formState.agentModel),
       linearApiKey: normalizeOptionalText(formState.linearApiKey),
+      xaiApiKey: normalizeOptionalText(formState.xaiApiKey),
       githubToken: normalizeOptionalText(formState.githubToken),
       clearLinearApiKey: formState.clearLinearApiKey,
+      clearXaiApiKey: formState.clearXaiApiKey,
       clearGithubToken: formState.clearGithubToken
     };
     await fetchJson<GlobalConfigRecord>("/api/settings/global", {
@@ -1672,11 +1820,17 @@ function projectFormToApiInput(formState: ProjectFormState): ProjectSetupInput {
     projectSlug: formState.projectSlug.trim(),
     githubRepository: formState.githubRepository.trim(),
     linearApiKey: normalizeOptionalText(formState.linearApiKey),
+    xaiApiKey: normalizeOptionalText(formState.xaiApiKey),
     githubToken: normalizeOptionalText(formState.githubToken),
     pollingIntervalMs: parseOptionalInteger(formState.pollingIntervalMs),
     maxConcurrentAgents: parseOptionalInteger(formState.maxConcurrentAgents),
     useGlobalLinearApiKey: formState.useGlobalLinearApiKey,
+    useGlobalXaiApiKey: formState.useGlobalXaiApiKey,
     useGlobalGithubToken: formState.useGlobalGithubToken,
+    agentProvider: formState.agentProvider,
+    agentModel: formState.agentModel.trim() || null,
+    useGlobalAgentProvider: formState.useGlobalAgentProvider,
+    useGlobalAgentModel: formState.useGlobalAgentModel,
     useGlobalPollingIntervalMs: formState.useGlobalPollingIntervalMs,
     useGlobalMaxConcurrentAgents: formState.useGlobalMaxConcurrentAgents
   };
@@ -1696,9 +1850,15 @@ function projectToForm(project: ManagedProjectRecord): ProjectFormState {
     displayName: project.displayName ?? "",
     projectSlug: project.projectSlug,
     githubRepository: project.githubRepository ?? "",
+    agentProvider: project.agentProvider,
+    agentModel: project.agentModel ?? "",
     linearApiKey: "",
+    xaiApiKey: "",
     githubToken: "",
+    useGlobalAgentProvider: project.usesGlobalAgentProvider,
+    useGlobalAgentModel: project.usesGlobalAgentModel,
     useGlobalLinearApiKey: project.usesGlobalLinearApiKey,
+    useGlobalXaiApiKey: project.usesGlobalXaiApiKey,
     useGlobalGithubToken: project.usesGlobalGithubToken,
     pollingIntervalMs: String(project.pollingIntervalMs),
     maxConcurrentAgents: String(project.maxConcurrentAgents),
@@ -1711,9 +1871,13 @@ function globalConfigToForm(globalConfig: GlobalConfigRecord): GlobalFormState {
   return {
     pollingIntervalMs: String(globalConfig.defaults.pollingIntervalMs),
     maxConcurrentAgents: String(globalConfig.defaults.maxConcurrentAgents),
+    agentProvider: globalConfig.defaults.agentProvider,
+    agentModel: globalConfig.defaults.agentModel,
     linearApiKey: "",
+    xaiApiKey: "",
     githubToken: "",
     clearLinearApiKey: false,
+    clearXaiApiKey: false,
     clearGithubToken: false
   };
 }
@@ -1722,9 +1886,13 @@ function emptyGlobalForm(): GlobalFormState {
   return {
     pollingIntervalMs: "30000",
     maxConcurrentAgents: "10",
+    agentProvider: "codex",
+    agentModel: "",
     linearApiKey: "",
+    xaiApiKey: "",
     githubToken: "",
     clearLinearApiKey: false,
+    clearXaiApiKey: false,
     clearGithubToken: false
   };
 }
@@ -1734,12 +1902,18 @@ function emptyProjectForm(): ProjectFormState {
     displayName: "",
     projectSlug: "",
     githubRepository: "",
+    agentProvider: "codex",
+    agentModel: "",
+    useGlobalAgentProvider: true,
+    useGlobalAgentModel: true,
     linearApiKey: "",
+    xaiApiKey: "",
     githubToken: "",
-    useGlobalLinearApiKey: true,
-    useGlobalGithubToken: true,
     pollingIntervalMs: "",
     maxConcurrentAgents: "",
+    useGlobalLinearApiKey: true,
+    useGlobalXaiApiKey: true,
+    useGlobalGithubToken: true,
     useGlobalPollingIntervalMs: true,
     useGlobalMaxConcurrentAgents: true
   };
@@ -1751,9 +1925,12 @@ function emptyGlobalConfig(): GlobalConfigRecord {
     envFilePath: "",
     defaults: {
       pollingIntervalMs: 30000,
-      maxConcurrentAgents: 10
+      maxConcurrentAgents: 10,
+      agentProvider: "codex",
+      agentModel: ""
     },
     hasLinearApiKey: false,
+    hasXaiApiKey: false,
     hasGithubToken: false
   };
 }
@@ -1769,7 +1946,7 @@ function emptySnapshot(): StatusSnapshot {
     projects: [],
     running: [],
     retries: [],
-    codex_totals: {
+    agent_totals: {
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
@@ -1795,12 +1972,12 @@ function filterSnapshotByProject(snapshot: StatusSnapshot, projectId: string | n
     retry_count: snapshot.retries.filter((entry) => entry.workflow_path === projectId).length,
     completed_count: projectMatch.reduce((sum, project) => sum + project.completed_count, 0),
     claimed_count: projectMatch.reduce((sum, project) => sum + project.claimed_count, 0),
-    codex_totals: projectMatch.reduce(
+    agent_totals: projectMatch.reduce(
       (totals, project) => {
-        totals.inputTokens += project.codex_totals.inputTokens;
-        totals.outputTokens += project.codex_totals.outputTokens;
-        totals.totalTokens += project.codex_totals.totalTokens;
-        totals.secondsRunning += project.codex_totals.secondsRunning;
+        totals.inputTokens += project.agent_totals.inputTokens;
+        totals.outputTokens += project.agent_totals.outputTokens;
+        totals.totalTokens += project.agent_totals.totalTokens;
+        totals.secondsRunning += project.agent_totals.secondsRunning;
         return totals;
       },
       {

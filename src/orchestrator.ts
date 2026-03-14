@@ -3,7 +3,7 @@ import path from "node:path";
 import type {
   AgentActivityEntry,
   AgentTranscriptEntry,
-  CodexRuntimeEvent,
+  AgentRuntimeEvent,
   Issue,
   LinearProjectInfo,
   LinearRateLimits,
@@ -52,13 +52,13 @@ export class Orchestrator {
   private readonly claimed = new Set<string>();
   private readonly retryAttempts = new Map<string, RetryEntry>();
   private readonly completed = new Set<string>();
-  private readonly codexTotals: RuntimeTotals = {
+  private readonly agentTotals: RuntimeTotals = {
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
     secondsRunning: 0
   };
-  private codexRateLimits: unknown = null;
+  private agentRateLimits: unknown = null;
   private linearRateLimits: LinearRateLimits | null = null;
   private linearProject: LinearProjectInfo | null = null;
   private linearProjectLookupSlug: string | null = null;
@@ -151,14 +151,15 @@ export class Orchestrator {
           display_name: workflow.config.project.displayName,
           poll_interval_ms: workflow.config.polling.intervalMs,
           max_concurrent_agents: workflow.config.agent.maxConcurrentAgents,
+          agent_provider: workflow.config.runtime.provider,
           running_count: this.running.size,
           retry_count: this.retryAttempts.size,
           completed_count: this.completed.size,
           claimed_count: this.claimed.size,
           linear_project: project,
           linear_rate_limits: this.linearRateLimits,
-          codex_totals: { ...this.codexTotals },
-          codex_rate_limits: this.codexRateLimits,
+          agent_totals: { ...this.agentTotals },
+          agent_rate_limits: this.agentRateLimits,
           updated_at: new Date().toISOString()
         }
       ],
@@ -173,20 +174,21 @@ export class Orchestrator {
         state: entry.issue.state,
         priority: entry.issue.priority,
         attempt: entry.retryAttempt,
+        agent_provider: entry.agentProvider,
         session_id: entry.sessionId,
         thread_id: entry.threadId,
         turn_id: entry.turnId,
-        codex_app_server_pid: entry.codexAppServerPid,
+        agent_process_pid: entry.agentProcessPid,
         phase: entry.phase,
         activity: entry.activity,
-        last_event: entry.lastCodexEvent,
-        last_message: entry.lastCodexMessage,
-        last_timestamp_ms: entry.lastCodexTimestampMs,
+        last_event: entry.lastAgentEvent,
+        last_message: entry.lastAgentMessage,
+        last_timestamp_ms: entry.lastAgentTimestampMs,
         started_at_ms: entry.startedAtMs,
         turn_count: entry.turnCount,
-        codex_input_tokens: entry.codexInputTokens,
-        codex_output_tokens: entry.codexOutputTokens,
-        codex_total_tokens: entry.codexTotalTokens,
+        agent_input_tokens: entry.agentInputTokens,
+        agent_output_tokens: entry.agentOutputTokens,
+        agent_total_tokens: entry.agentTotalTokens,
         issue_url: entry.issue.url,
         recent_activity: [...entry.recentActivity],
         transcript_activity: [...entry.transcriptActivity]
@@ -203,7 +205,7 @@ export class Orchestrator {
         due_at_ms: entry.dueAtMs,
         error: entry.error
       })),
-      codex_totals: { ...this.codexTotals },
+      agent_totals: { ...this.agentTotals },
       recent_events: [...this.recentEvents]
     };
   }
@@ -276,7 +278,7 @@ export class Orchestrator {
       workflow,
       this.logger,
       (event) => {
-        this.handleCodexEvent(issue.id, event);
+        this.handleAgentEvent(issue.id, event);
       },
       (event) => {
         this.handleWorkerActivity(issue.id, event);
@@ -286,19 +288,20 @@ export class Orchestrator {
     const entry: RunningEntry = {
       issue,
       identifier: issue.identifier,
+      agentProvider: workflow.config.runtime.provider,
       retryAttempt: attempt,
       startedAtMs: Date.now(),
       worker,
       sessionId: null,
       threadId: null,
       turnId: null,
-      codexAppServerPid: null,
-      lastCodexEvent: null,
-      lastCodexTimestampMs: null,
-      lastCodexMessage: null,
-      codexInputTokens: 0,
-      codexOutputTokens: 0,
-      codexTotalTokens: 0,
+      agentProcessPid: null,
+      lastAgentEvent: null,
+      lastAgentTimestampMs: null,
+      lastAgentMessage: null,
+      agentInputTokens: 0,
+      agentOutputTokens: 0,
+      agentTotalTokens: 0,
       lastReportedInputTokens: 0,
       lastReportedOutputTokens: 0,
       lastReportedTotalTokens: 0,
@@ -354,7 +357,7 @@ export class Orchestrator {
     }
 
     this.running.delete(issueId);
-    this.codexTotals.secondsRunning += Math.max(0, Math.round((Date.now() - entry.startedAtMs) / 1000));
+    this.agentTotals.secondsRunning += Math.max(0, Math.round((Date.now() - entry.startedAtMs) / 1000));
 
     const workflow = await this.refreshWorkflow();
 
@@ -531,7 +534,7 @@ export class Orchestrator {
   }
 
   private reconcileStalledRuns(config: ServiceConfig): void {
-    if (config.codex.stallTimeoutMs <= 0) {
+    if (config.runtime.stallTimeoutMs <= 0) {
       return;
     }
 
@@ -541,8 +544,8 @@ export class Orchestrator {
         continue;
       }
 
-      const lastSeenMs = entry.lastCodexTimestampMs ?? entry.startedAtMs;
-      if (now - lastSeenMs > config.codex.stallTimeoutMs) {
+      const lastSeenMs = entry.lastAgentTimestampMs ?? entry.startedAtMs;
+      if (now - lastSeenMs > config.runtime.stallTimeoutMs) {
         this.cancelRunningIssue(issueId, "stalled");
       }
     }
@@ -572,7 +575,7 @@ export class Orchestrator {
 
     entry.phase = event.phase;
     entry.activity = event.message;
-    entry.lastCodexTimestampMs = Date.parse(event.timestamp);
+    entry.lastAgentTimestampMs = Date.parse(event.timestamp);
     this.appendAgentActivity(entry, {
       timestamp: event.timestamp,
       source: "worker",
@@ -597,36 +600,36 @@ export class Orchestrator {
     this.publishSnapshot();
   }
 
-  private handleCodexEvent(issueId: string, event: CodexRuntimeEvent): void {
+  private handleAgentEvent(issueId: string, event: AgentRuntimeEvent): void {
     const entry = this.running.get(issueId);
     if (!entry) {
       return;
     }
 
-    if (entry.codexAppServerPid === null && event.codexAppServerPid !== null) {
-      entry.codexAppServerPid = event.codexAppServerPid;
+    if (entry.agentProcessPid === null && event.agentProcessPid !== null) {
+      entry.agentProcessPid = event.agentProcessPid;
     }
-    const renderedMessage = humanizeCodexEvent(event);
-    entry.lastCodexEvent = event.event;
-    entry.lastCodexMessage = renderedMessage;
-    entry.lastCodexTimestampMs = Date.parse(event.timestamp);
-    if (shouldSurfaceCodexEventAsPrimaryActivity(event, renderedMessage)) {
+    const renderedMessage = humanizeAgentEvent(event);
+    entry.lastAgentEvent = event.event;
+    entry.lastAgentMessage = renderedMessage;
+    entry.lastAgentTimestampMs = Date.parse(event.timestamp);
+    if (shouldSurfaceAgentEventAsPrimaryActivity(event, renderedMessage)) {
       entry.activity = renderedMessage;
     }
-    if (shouldPersistCodexActivity(event)) {
+    if (shouldPersistAgentActivity(event)) {
       this.appendAgentActivity(entry, {
         timestamp: event.timestamp,
-        source: "codex",
+        source: "agent",
         phase: entry.phase,
         message: renderedMessage
       });
     }
-    if (shouldPersistCodexTranscript(event)) {
+    if (shouldPersistAgentTranscript(event)) {
       this.appendTranscriptActivity(entry, {
         timestamp: event.timestamp,
-        source: "codex",
+        source: "agent",
         phase: entry.phase,
-        kind: classifyCodexTranscriptKind(event, renderedMessage),
+        kind: classifyAgentTranscriptKind(event, renderedMessage),
         message: renderedMessage
       });
     }
@@ -645,25 +648,25 @@ export class Orchestrator {
       const inputDelta = Math.max(0, event.usage.input_tokens - entry.lastReportedInputTokens);
       const outputDelta = Math.max(0, event.usage.output_tokens - entry.lastReportedOutputTokens);
       const totalDelta = Math.max(0, event.usage.total_tokens - entry.lastReportedTotalTokens);
-      this.codexTotals.inputTokens += inputDelta;
-      this.codexTotals.outputTokens += outputDelta;
-      this.codexTotals.totalTokens += totalDelta;
-      entry.codexInputTokens = event.usage.input_tokens;
-      entry.codexOutputTokens = event.usage.output_tokens;
-      entry.codexTotalTokens = event.usage.total_tokens;
+      this.agentTotals.inputTokens += inputDelta;
+      this.agentTotals.outputTokens += outputDelta;
+      this.agentTotals.totalTokens += totalDelta;
+      entry.agentInputTokens = event.usage.input_tokens;
+      entry.agentOutputTokens = event.usage.output_tokens;
+      entry.agentTotalTokens = event.usage.total_tokens;
       entry.lastReportedInputTokens = event.usage.input_tokens;
       entry.lastReportedOutputTokens = event.usage.output_tokens;
       entry.lastReportedTotalTokens = event.usage.total_tokens;
     }
 
     if (event.rateLimits !== undefined) {
-      this.codexRateLimits = event.rateLimits;
+      this.agentRateLimits = event.rateLimits;
     }
 
-    if (shouldRecordCodexEvent(event)) {
+    if (shouldRecordAgentEvent(event)) {
       this.recordEvent(
         event.event === "turn_failed" || event.event === "turn_input_required" || event.event === "tool_call_failed" ? "warn" : "info",
-        `codex ${renderedMessage}`,
+        `${event.provider} ${renderedMessage}`,
         {
           issue_id: issueId,
           issue_identifier: entry.identifier,
@@ -951,7 +954,7 @@ function nextAttemptFrom(entry: RunningEntry): number {
   return entry.retryAttempt === null ? 1 : entry.retryAttempt + 1;
 }
 
-function shouldRecordCodexEvent(event: CodexRuntimeEvent): boolean {
+function shouldRecordAgentEvent(event: AgentRuntimeEvent): boolean {
   if (event.event === "notification") {
     return shouldRecordHumanizedCodexNotification(event.message);
   }
@@ -970,7 +973,7 @@ function shouldRecordCodexEvent(event: CodexRuntimeEvent): boolean {
   ].includes(event.event);
 }
 
-function shouldPersistCodexActivity(event: CodexRuntimeEvent): boolean {
+function shouldPersistAgentActivity(event: AgentRuntimeEvent): boolean {
   if (event.event === "notification") {
     return shouldRecordHumanizedCodexNotification(event.message);
   }
@@ -990,7 +993,7 @@ function shouldPersistCodexActivity(event: CodexRuntimeEvent): boolean {
   ].includes(event.event);
 }
 
-function shouldPersistCodexTranscript(event: CodexRuntimeEvent): boolean {
+function shouldPersistAgentTranscript(event: AgentRuntimeEvent): boolean {
   if (event.event === "notification") {
     return shouldCaptureHumanizedCodexTranscript(event.message);
   }
@@ -1010,7 +1013,7 @@ function shouldPersistCodexTranscript(event: CodexRuntimeEvent): boolean {
   ].includes(event.event);
 }
 
-function shouldSurfaceCodexEventAsPrimaryActivity(event: CodexRuntimeEvent, renderedMessage: string): boolean {
+function shouldSurfaceAgentEventAsPrimaryActivity(event: AgentRuntimeEvent, renderedMessage: string): boolean {
   if (event.event === "notification") {
     return shouldRecordHumanizedCodexNotification(renderedMessage);
   }
@@ -1018,8 +1021,8 @@ function shouldSurfaceCodexEventAsPrimaryActivity(event: CodexRuntimeEvent, rend
   return true;
 }
 
-function classifyCodexTranscriptKind(
-  event: CodexRuntimeEvent,
+function classifyAgentTranscriptKind(
+  event: AgentRuntimeEvent,
   renderedMessage: string
 ): AgentTranscriptEntry["kind"] {
   switch (event.event) {
@@ -1050,22 +1053,22 @@ function shouldRecordWorkerActivity(phase: WorkerActivityEvent["phase"]): boolea
   ].includes(phase);
 }
 
-function humanizeCodexEvent(event: CodexRuntimeEvent): string {
+function humanizeAgentEvent(event: AgentRuntimeEvent): string {
   if (event.message) {
     return event.message;
   }
 
   switch (event.event) {
     case "session_started":
-      return "Codex session started";
+      return `${capitalizeProvider(event.provider)} session started`;
     case "turn_completed":
-      return "Codex turn completed";
+      return `${capitalizeProvider(event.provider)} turn completed`;
     case "turn_failed":
-      return "Codex turn failed";
+      return `${capitalizeProvider(event.provider)} turn failed`;
     case "turn_cancelled":
-      return "Codex turn cancelled";
+      return `${capitalizeProvider(event.provider)} turn cancelled`;
     case "turn_input_required":
-      return "Codex requested input";
+      return `${capitalizeProvider(event.provider)} requested input`;
     case "user_input_auto_answered":
       return event.message ?? "Auto-answered user-input request";
     case "approval_auto_approved":
@@ -1082,4 +1085,16 @@ function humanizeCodexEvent(event: CodexRuntimeEvent): string {
 
 function asOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function capitalizeProvider(provider: AgentRuntimeEvent["provider"]): string {
+  switch (provider) {
+    case "claude":
+      return "Claude";
+    case "grok":
+      return "Grok";
+    case "codex":
+    default:
+      return "Codex";
+  }
 }

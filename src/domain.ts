@@ -66,14 +66,35 @@ export interface ServerConfig {
   host: string;
 }
 
+export type AgentProvider = "codex" | "claude" | "grok";
+
+export interface RuntimeConfig {
+  provider: AgentProvider;
+  model: string;
+  turnTimeoutMs: number;
+  readTimeoutMs: number;
+  stallTimeoutMs: number;
+}
+
 export interface CodexConfig {
   command: string;
   approvalPolicy: unknown;
   threadSandbox: unknown;
   turnSandboxPolicy: unknown;
-  turnTimeoutMs: number;
-  readTimeoutMs: number;
-  stallTimeoutMs: number;
+}
+
+export interface ClaudeConfig {
+  command: string;
+  permissionMode: string;
+  maxBudgetUsd: number | null;
+}
+
+export interface GrokConfig {
+  apiKey: string;
+  baseUrl: string;
+  maxToolRounds: number;
+  commandTimeoutMs: number;
+  maxOutputBytes: number;
 }
 
 export interface ServiceConfig {
@@ -84,7 +105,10 @@ export interface ServiceConfig {
   workspace: WorkspaceConfig;
   hooks: HooksConfig;
   agent: AgentConfig;
+  runtime: RuntimeConfig;
   codex: CodexConfig;
+  claude: ClaudeConfig;
+  grok: GrokConfig;
   server: ServerConfig;
 }
 
@@ -108,13 +132,14 @@ export type WorkerCancelReason =
   | "canceled_terminal"
   | "service_stopping";
 
-export interface CodexUsageSnapshot {
+export interface AgentUsageSnapshot {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
 }
 
-export interface CodexRuntimeEvent {
+export interface AgentRuntimeEvent {
+  provider: AgentProvider;
   event:
     | "session_started"
     | "startup_failed"
@@ -132,11 +157,11 @@ export interface CodexRuntimeEvent {
     | "other_message"
     | "malformed";
   timestamp: string;
-  codexAppServerPid: number | null;
+  agentProcessPid: number | null;
   sessionId?: string;
   threadId?: string;
   turnId?: string;
-  usage?: CodexUsageSnapshot;
+  usage?: AgentUsageSnapshot;
   rateLimits?: unknown;
   message?: string;
 }
@@ -157,14 +182,14 @@ export interface WorkerActivityEvent {
 
 export interface AgentActivityEntry {
   timestamp: string;
-  source: "worker" | "codex" | "system";
+  source: "worker" | "agent" | "system";
   phase: string | null;
   message: string;
 }
 
 export interface AgentTranscriptEntry {
   timestamp: string;
-  source: "worker" | "codex" | "system";
+  source: "worker" | "agent" | "system";
   phase: string | null;
   kind: "status" | "message" | "reasoning" | "command" | "tool" | "approval" | "system";
   message: string;
@@ -198,6 +223,7 @@ export interface RetryEntry {
 export interface RunningEntry {
   issue: Issue;
   identifier: string;
+  agentProvider: AgentProvider;
   retryAttempt: number | null;
   startedAtMs: number;
   worker: {
@@ -207,13 +233,13 @@ export interface RunningEntry {
   sessionId: string | null;
   threadId: string | null;
   turnId: string | null;
-  codexAppServerPid: number | null;
-  lastCodexEvent: string | null;
-  lastCodexTimestampMs: number | null;
-  lastCodexMessage: string | null;
-  codexInputTokens: number;
-  codexOutputTokens: number;
-  codexTotalTokens: number;
+  agentProcessPid: number | null;
+  lastAgentEvent: string | null;
+  lastAgentTimestampMs: number | null;
+  lastAgentMessage: string | null;
+  agentInputTokens: number;
+  agentOutputTokens: number;
+  agentTotalTokens: number;
   lastReportedInputTokens: number;
   lastReportedOutputTokens: number;
   lastReportedTotalTokens: number;
@@ -272,14 +298,15 @@ export interface StatusProjectSummary {
   display_name: string | null;
   poll_interval_ms: number;
   max_concurrent_agents: number;
+  agent_provider: AgentProvider;
   running_count: number;
   retry_count: number;
   completed_count: number;
   claimed_count: number;
   linear_project: LinearProjectInfo;
   linear_rate_limits: LinearRateLimits | null;
-  codex_totals: RuntimeTotals;
-  codex_rate_limits: unknown;
+  agent_totals: RuntimeTotals;
+  agent_rate_limits: unknown;
   updated_at: string;
 }
 
@@ -294,10 +321,11 @@ export interface StatusRunningEntry {
   state: string;
   priority: number | null;
   attempt: number | null;
+  agent_provider: AgentProvider;
   session_id: string | null;
   thread_id: string | null;
   turn_id: string | null;
-  codex_app_server_pid: number | null;
+  agent_process_pid: number | null;
   phase: string;
   activity: string;
   last_event: string | null;
@@ -305,9 +333,9 @@ export interface StatusRunningEntry {
   last_timestamp_ms: number | null;
   started_at_ms: number;
   turn_count: number;
-  codex_input_tokens: number;
-  codex_output_tokens: number;
-  codex_total_tokens: number;
+  agent_input_tokens: number;
+  agent_output_tokens: number;
+  agent_total_tokens: number;
   issue_url: string | null;
   recent_activity: AgentActivityEntry[];
   transcript_activity: AgentTranscriptEntry[];
@@ -336,7 +364,7 @@ export interface StatusSnapshot {
   projects: StatusProjectSummary[];
   running: StatusRunningEntry[];
   retries: StatusRetryEntry[];
-  codex_totals: RuntimeTotals;
+  agent_totals: RuntimeTotals;
   recent_events: OperatorEvent[];
 }
 
@@ -360,6 +388,8 @@ export interface DashboardBootstrap {
 export interface GlobalDefaults {
   pollingIntervalMs: number;
   maxConcurrentAgents: number;
+  agentProvider: AgentProvider;
+  agentModel: string;
 }
 
 export interface GlobalConfigRecord {
@@ -367,6 +397,7 @@ export interface GlobalConfigRecord {
   envFilePath: string;
   defaults: GlobalDefaults;
   hasLinearApiKey: boolean;
+  hasXaiApiKey: boolean;
   hasGithubToken: boolean;
 }
 
@@ -374,8 +405,12 @@ export interface GlobalConfigInput {
   pollingIntervalMs?: number | null;
   maxConcurrentAgents?: number | null;
   linearApiKey?: string | null;
+  xaiApiKey?: string | null;
   githubToken?: string | null;
+  agentProvider?: AgentProvider | null;
+  agentModel?: string | null;
   clearLinearApiKey?: boolean;
+  clearXaiApiKey?: boolean;
   clearGithubToken?: boolean;
 }
 
@@ -383,11 +418,17 @@ export interface ProjectSetupInput {
   displayName?: string | null;
   projectSlug: string;
   linearApiKey?: string | null;
+  xaiApiKey?: string | null;
   githubRepository: string;
   githubToken?: string | null;
+  agentProvider?: AgentProvider | null;
+  agentModel?: string | null;
+  useGlobalAgentProvider?: boolean;
+  useGlobalAgentModel?: boolean;
   pollingIntervalMs?: number | null;
   maxConcurrentAgents?: number | null;
   useGlobalLinearApiKey?: boolean;
+  useGlobalXaiApiKey?: boolean;
   useGlobalGithubToken?: boolean;
   useGlobalPollingIntervalMs?: boolean;
   useGlobalMaxConcurrentAgents?: boolean;
@@ -400,14 +441,20 @@ export interface ProjectSetupResult {
   runtimeRunning: boolean;
   projectSlug: string;
   githubRepository: string;
+  agentProvider: AgentProvider;
+  agentModel: string;
   workflowDirectory: string;
   workflowPath: string;
   envFilePath: string;
   pollingIntervalMs: number;
   maxConcurrentAgents: number;
   hasLinearApiKey: boolean;
+  hasXaiApiKey: boolean;
   hasGithubToken: boolean;
+  usesGlobalAgentProvider: boolean;
+  usesGlobalAgentModel: boolean;
   usesGlobalLinearApiKey: boolean;
+  usesGlobalXaiApiKey: boolean;
   usesGlobalGithubToken: boolean;
   usesGlobalPollingIntervalMs: boolean;
   usesGlobalMaxConcurrentAgents: boolean;
@@ -419,10 +466,16 @@ export interface ProjectUpdateInput {
   projectSlug: string;
   githubRepository: string;
   linearApiKey?: string | null;
+  xaiApiKey?: string | null;
   githubToken?: string | null;
+  agentProvider?: AgentProvider | null;
+  agentModel?: string | null;
+  useGlobalAgentProvider?: boolean;
+  useGlobalAgentModel?: boolean;
   pollingIntervalMs?: number | null;
   maxConcurrentAgents?: number | null;
   useGlobalLinearApiKey?: boolean;
+  useGlobalXaiApiKey?: boolean;
   useGlobalGithubToken?: boolean;
   useGlobalPollingIntervalMs?: boolean;
   useGlobalMaxConcurrentAgents?: boolean;
@@ -439,14 +492,20 @@ export interface ManagedProjectRecord {
   runtimeRunning: boolean;
   projectSlug: string;
   githubRepository: string | null;
+  agentProvider: AgentProvider;
+  agentModel: string;
+  usesGlobalAgentProvider: boolean;
+  usesGlobalAgentModel: boolean;
   workflowDirectory: string;
   workflowPath: string;
   envFilePath: string;
   pollingIntervalMs: number;
   maxConcurrentAgents: number;
   hasLinearApiKey: boolean;
+  hasXaiApiKey: boolean;
   hasGithubToken: boolean;
   usesGlobalLinearApiKey: boolean;
+  usesGlobalXaiApiKey: boolean;
   usesGlobalGithubToken: boolean;
   usesGlobalPollingIntervalMs: boolean;
   usesGlobalMaxConcurrentAgents: boolean;

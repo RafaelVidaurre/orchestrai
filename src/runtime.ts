@@ -274,12 +274,12 @@ function combineSnapshots(snapshots: StatusSnapshot[]): StatusSnapshot {
     projects: snapshots.flatMap((snapshot) => snapshot.projects),
     running: snapshots.flatMap((snapshot) => snapshot.running),
     retries: snapshots.flatMap((snapshot) => snapshot.retries),
-    codex_totals: snapshots.reduce(
+    agent_totals: snapshots.reduce(
       (totals, snapshot) => {
-        totals.inputTokens += snapshot.codex_totals.inputTokens;
-        totals.outputTokens += snapshot.codex_totals.outputTokens;
-        totals.totalTokens += snapshot.codex_totals.totalTokens;
-        totals.secondsRunning += snapshot.codex_totals.secondsRunning;
+        totals.inputTokens += snapshot.agent_totals.inputTokens;
+        totals.outputTokens += snapshot.agent_totals.outputTokens;
+        totals.totalTokens += snapshot.agent_totals.totalTokens;
+        totals.secondsRunning += snapshot.agent_totals.secondsRunning;
         return totals;
       },
       {

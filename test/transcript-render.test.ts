@@ -6,7 +6,7 @@ import { buildTranscriptRenderBlocks, commandIconTone, commandTooltip, isCompact
 function transcriptEntry(overrides: Partial<AgentTranscriptEntry>): AgentTranscriptEntry {
   return {
     timestamp: new Date(0).toISOString(),
-    source: "codex",
+    source: "agent",
     phase: "streaming_turn",
     kind: "message",
     message: "message",

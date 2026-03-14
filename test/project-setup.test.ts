@@ -175,4 +175,66 @@ describe("project setup", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it("can scaffold a Claude-backed project with explicit provider and model", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "project-claude-setup-"));
+    try {
+      const created = await createProjectSetup(root, {
+        displayName: "Claude Project",
+        projectSlug: "claude-project",
+        linearApiKey: "lin_api_123",
+        githubRepository: "example/claude-project",
+        agentProvider: "claude",
+        agentModel: "claude-sonnet-4-6",
+        useGlobalAgentProvider: false,
+        useGlobalAgentModel: false
+      });
+
+      const workflow = await readFile(created.workflowPath, "utf8");
+      const record = await readProjectSetup(created.workflowPath, process.env, root);
+
+      expect(workflow).toContain("runtime:");
+      expect(workflow).toContain("provider: claude");
+      expect(workflow).toContain("model: claude-sonnet-4-6");
+      expect(workflow).toContain("claude:");
+      expect(workflow).toContain("permission_mode: bypassPermissions");
+      expect(record.agentProvider).toBe("claude");
+      expect(record.agentModel).toBe("claude-sonnet-4-6");
+      expect(record.usesGlobalAgentProvider).toBe(false);
+      expect(record.usesGlobalAgentModel).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("can scaffold a Grok-backed project with XAI credentials", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "project-grok-setup-"));
+    try {
+      const created = await createProjectSetup(root, {
+        displayName: "Grok Project",
+        projectSlug: "grok-project",
+        linearApiKey: "lin_api_123",
+        xaiApiKey: "xai-secret",
+        githubRepository: "example/grok-project",
+        agentProvider: "grok",
+        useGlobalAgentProvider: false
+      });
+
+      const workflow = await readFile(created.workflowPath, "utf8");
+      const envFile = await readFile(created.envFilePath, "utf8");
+      const record = await readProjectSetup(created.workflowPath, process.env, root);
+
+      expect(workflow).toContain("provider: grok");
+      expect(workflow).toContain("model: grok-code-fast-1");
+      expect(workflow).toContain("grok:");
+      expect(workflow).toContain("api_key: $XAI_API_KEY");
+      expect(envFile).toContain('XAI_API_KEY="xai-secret"');
+      expect(record.agentProvider).toBe("grok");
+      expect(record.agentModel).toBe("grok-code-fast-1");
+      expect(record.hasXaiApiKey).toBe(true);
+      expect(record.usesGlobalXaiApiKey).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });

@@ -7,8 +7,8 @@ The service:
 - polls Linear for active issues in one or more configured projects
 - creates and reuses per-issue workspaces under a configured root
 - loads runtime behavior from workflow Markdown files
-- launches `codex app-server` inside each issue workspace
-- requires Linear MCP to be available and authenticated inside the child Codex session
+- launches the configured agent runtime inside each issue workspace
+- supports `codex app-server`, `claude -p --output-format stream-json`, and xAI Grok runtimes today
 - reconciles live runs against tracker state, retries failures with backoff, and cleans terminal workspaces
 - serves a live dashboard over HTTP with aggregated activity across projects
 
@@ -16,8 +16,9 @@ The service:
 
 - Node.js 22+
 - Corepack-enabled Yarn 3.4.1
-- `codex` on `PATH`
-- Linear MCP configured and authenticated in the Codex environment used by `codex app-server`
+- `codex` or `claude` on `PATH` when using those providers
+- `XAI_API_KEY` when using `runtime.provider: grok`
+- Linear API access in the child agent environment, either through MCP or `LINEAR_API_KEY`
 
 ## Commands
 
@@ -106,5 +107,6 @@ The operator surfaces in this repo follow the same basic direction described in 
 
 ## Notes
 
-- The runtime prefers Linear MCP and fails worker startup if Linear MCP is missing or unauthenticated.
-- A limited `linear_graphql` dynamic tool handler still exists as a fallback path when Codex issues that tool call.
+- Codex still prefers Linear MCP and can fall back to the injected `linear_graphql` tool.
+- Claude CLI currently relies on its built-in tools plus the same workspace/env credentials, including `LINEAR_API_KEY` for direct API access.
+- Grok uses xAI's Responses API plus OrchestrAI-managed local tools for shell commands, file operations, and `linear_graphql`. Configure it with `XAI_API_KEY`.

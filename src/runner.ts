@@ -1,13 +1,12 @@
 import type {
-  CodexRuntimeEvent,
+  AgentRuntimeEvent,
   Issue,
   LoadedWorkflow,
-  ServiceConfig,
   WorkerActivityEvent,
   WorkerCancelReason,
   WorkerOutcome
 } from "./domain";
-import { CodexAppServerSession } from "./codex";
+import { AgentSession, agentProviderLabel, createAgentSession } from "./agent-session";
 import { ServiceError, errorMessage } from "./errors";
 import { Logger } from "./logger";
 import { createTrackerClient } from "./tracker";
@@ -19,7 +18,7 @@ export class IssueWorker {
   private readonly tracker;
   private readonly workspaceManager: WorkspaceManager;
   private cancelReason: WorkerCancelReason | null = null;
-  private session: CodexAppServerSession | null = null;
+  private session: AgentSession | null = null;
   readonly result: Promise<WorkerOutcome>;
 
   constructor(
@@ -27,7 +26,7 @@ export class IssueWorker {
     private readonly attempt: number | null,
     private readonly workflow: LoadedWorkflow,
     logger: Logger,
-    private readonly onCodexEvent: (event: CodexRuntimeEvent) => void,
+    private readonly onAgentEvent: (event: AgentRuntimeEvent) => void,
     private readonly onActivityEvent: (event: WorkerActivityEvent) => void
   ) {
     this.workspaceManager = new WorkspaceManager(logger.child({ component: "workspace" }));
@@ -60,17 +59,18 @@ export class IssueWorker {
       this.reportActivity("running_before_run_hook", "Running before_run hook");
       await this.workspaceManager.runBeforeRun(this.workflow.config, workspace.path, this.workflow.env);
 
-      this.reportActivity("launching_agent_process", "Launching Codex app-server");
-      this.session = new CodexAppServerSession(
+      const providerLabel = agentProviderLabel(this.workflow.config.runtime.provider);
+      this.reportActivity("launching_agent_process", `Launching ${providerLabel}`);
+      this.session = createAgentSession(
         this.workflow.config,
         workspace.runPath,
         this.workflow.env,
-        this.logger.child({ component: "codex" }),
-        this.onCodexEvent
+        this.logger.child({ component: this.workflow.config.runtime.provider }),
+        this.onAgentEvent
       );
 
-      this.reportActivity("initializing_session", "Initializing Codex session");
-      const { threadId } = await this.session.start();
+      this.reportActivity("initializing_session", `Initializing ${providerLabel} session`);
+      await this.session.start();
 
       while (true) {
         this.assertNotCancelled();
@@ -82,8 +82,8 @@ export class IssueWorker {
             ? await renderPrompt(this.workflow.definition, currentIssue, this.attempt)
             : buildContinuationPrompt(currentIssue, turnCount, this.workflow.config.agent.maxTurns);
 
-        this.reportActivity("streaming_turn", `Streaming Codex turn ${turnCount}`);
-        await this.session.runTurn(threadId, prompt);
+        this.reportActivity("streaming_turn", `Streaming ${providerLabel} turn ${turnCount}`);
+        await this.session.runTurn(prompt);
         this.reportActivity("refreshing_issue_state", "Refreshing issue state from Linear");
         const previousState = currentIssue.state;
         const refreshedIssues = await this.tracker.fetchIssueStatesByIds([currentIssue.id]);

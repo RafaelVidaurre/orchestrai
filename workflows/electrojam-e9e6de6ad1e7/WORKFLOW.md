@@ -30,11 +30,12 @@ hooks:
       git clone "git@github.com:${GITHUB_REPOSITORY}.git" repo || git clone "https://github.com/${GITHUB_REPOSITORY}.git" repo
     fi
 agent:
-  max_concurrent_agents: 10
+  max_concurrent_agents: 2
   max_turns: 20
   max_retry_backoff_ms: 300000
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server
+  command: codex --config shell_environment_policy.inherit=all --config
+    model_reasoning_effort=xhigh app-server
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
@@ -42,7 +43,7 @@ codex:
 server:
   port: "-1"
 project:
-  enabled: true
+  enabled: false
   name: Electrojam
 ---
 You are working on a Linear ticket `{{ issue.identifier }}`

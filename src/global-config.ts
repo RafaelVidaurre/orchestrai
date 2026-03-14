@@ -3,12 +3,14 @@ import path from "node:path";
 
 import { parse } from "dotenv";
 
-import type { GlobalConfigInput, GlobalConfigRecord } from "./domain";
+import type { AgentProvider, GlobalConfigInput, GlobalConfigRecord } from "./domain";
 import { ServiceError } from "./errors";
 import { loadEnvFiles } from "./env";
 
 const DEFAULT_POLL_INTERVAL_MS = 30000;
 const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
+const DEFAULT_AGENT_PROVIDER: AgentProvider = "codex";
+const DEFAULT_AGENT_MODEL = "";
 
 export async function readGlobalConfig(
   projectsRoot: string,
@@ -26,9 +28,15 @@ export async function readGlobalConfig(
       maxConcurrentAgents: coercePositiveInteger(
         env.ORCHESTRAI_DEFAULT_MAX_CONCURRENT_AGENTS,
         DEFAULT_MAX_CONCURRENT_AGENTS
+      ),
+      agentProvider: coerceAgentProvider(env.ORCHESTRAI_DEFAULT_AGENT_PROVIDER, DEFAULT_AGENT_PROVIDER),
+      agentModel: coerceAgentModel(
+        env.ORCHESTRAI_DEFAULT_AGENT_MODEL ?? env.ORCHESTRAI_DEFAULT_CODEX_MODEL,
+        DEFAULT_AGENT_MODEL
       )
     },
     hasLinearApiKey: typeof env.LINEAR_API_KEY === "string" && env.LINEAR_API_KEY.length > 0,
+    hasXaiApiKey: typeof env.XAI_API_KEY === "string" && env.XAI_API_KEY.length > 0,
     hasGithubToken: typeof env.GITHUB_TOKEN === "string" && env.GITHUB_TOKEN.length > 0
   };
 }
@@ -50,13 +58,21 @@ export async function updateGlobalConfig(
     ),
     ORCHESTRAI_DEFAULT_MAX_CONCURRENT_AGENTS: String(
       coercePositiveInteger(input.maxConcurrentAgents, effective.defaults.maxConcurrentAgents)
-    )
+    ),
+    ORCHESTRAI_DEFAULT_AGENT_PROVIDER: coerceAgentProvider(input.agentProvider, effective.defaults.agentProvider),
+    ORCHESTRAI_DEFAULT_AGENT_MODEL: coerceAgentModel(input.agentModel, effective.defaults.agentModel)
   };
 
   if (input.clearLinearApiKey) {
     delete next.LINEAR_API_KEY;
   } else if (typeof input.linearApiKey === "string" && input.linearApiKey.trim().length > 0) {
     next.LINEAR_API_KEY = input.linearApiKey.trim();
+  }
+
+  if (input.clearXaiApiKey) {
+    delete next.XAI_API_KEY;
+  } else if (typeof input.xaiApiKey === "string" && input.xaiApiKey.trim().length > 0) {
+    next.XAI_API_KEY = input.xaiApiKey.trim();
   }
 
   if (input.clearGithubToken) {
@@ -89,9 +105,16 @@ export function validateGlobalConfigInput(value: unknown): GlobalConfigInput {
   return {
     pollingIntervalMs: typeof input.pollingIntervalMs === "number" ? input.pollingIntervalMs : null,
     maxConcurrentAgents: typeof input.maxConcurrentAgents === "number" ? input.maxConcurrentAgents : null,
+    agentProvider:
+      input.agentProvider === "codex" || input.agentProvider === "claude" || input.agentProvider === "grok"
+        ? input.agentProvider
+        : null,
+    agentModel: typeof input.agentModel === "string" ? input.agentModel : null,
     linearApiKey: typeof input.linearApiKey === "string" ? input.linearApiKey : null,
+    xaiApiKey: typeof input.xaiApiKey === "string" ? input.xaiApiKey : null,
     githubToken: typeof input.githubToken === "string" ? input.githubToken : null,
     clearLinearApiKey: input.clearLinearApiKey === true,
+    clearXaiApiKey: input.clearXaiApiKey === true,
     clearGithubToken: input.clearGithubToken === true
   };
 }
@@ -130,4 +153,17 @@ function coercePositiveInteger(value: unknown, fallback: number): number {
   }
 
   return fallback;
+}
+
+function coerceAgentModel(value: unknown, fallback: string): string {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : fallback;
+  }
+
+  return fallback;
+}
+
+function coerceAgentProvider(value: unknown, fallback: AgentProvider): AgentProvider {
+  return value === "claude" || value === "codex" || value === "grok" ? value : fallback;
 }

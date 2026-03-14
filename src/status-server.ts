@@ -1727,14 +1727,23 @@ function validateProjectSetupInput(value: unknown): ProjectSetupInput {
     displayName: typeof input.displayName === "string" ? input.displayName : null,
     projectSlug: typeof input.projectSlug === "string" ? input.projectSlug : "",
     linearApiKey: typeof input.linearApiKey === "string" ? input.linearApiKey : null,
+    xaiApiKey: typeof input.xaiApiKey === "string" ? input.xaiApiKey : null,
     githubRepository: typeof input.githubRepository === "string" ? input.githubRepository : "",
     githubToken: typeof input.githubToken === "string" ? input.githubToken : null,
+    agentProvider:
+      input.agentProvider === "codex" || input.agentProvider === "claude" || input.agentProvider === "grok"
+        ? input.agentProvider
+        : null,
+    agentModel: typeof input.agentModel === "string" ? input.agentModel : null,
     pollingIntervalMs: typeof input.pollingIntervalMs === "number" ? input.pollingIntervalMs : null,
     maxConcurrentAgents: typeof input.maxConcurrentAgents === "number" ? input.maxConcurrentAgents : null,
     useGlobalLinearApiKey: input.useGlobalLinearApiKey === true,
+    useGlobalXaiApiKey: input.useGlobalXaiApiKey === true,
     useGlobalGithubToken: input.useGlobalGithubToken === true,
     useGlobalPollingIntervalMs: input.useGlobalPollingIntervalMs !== false,
-    useGlobalMaxConcurrentAgents: input.useGlobalMaxConcurrentAgents !== false
+    useGlobalMaxConcurrentAgents: input.useGlobalMaxConcurrentAgents !== false,
+    useGlobalAgentProvider: input.useGlobalAgentProvider === true,
+    useGlobalAgentModel: input.useGlobalAgentModel === true
   };
 }
 
@@ -1753,13 +1762,22 @@ function validateProjectUpdateInput(value: unknown): ProjectUpdateInput {
     projectSlug: typeof input.projectSlug === "string" ? input.projectSlug : "",
     githubRepository: typeof input.githubRepository === "string" ? input.githubRepository : "",
     linearApiKey: typeof input.linearApiKey === "string" ? input.linearApiKey : null,
+    xaiApiKey: typeof input.xaiApiKey === "string" ? input.xaiApiKey : null,
     githubToken: typeof input.githubToken === "string" ? input.githubToken : null,
+    agentProvider:
+      input.agentProvider === "codex" || input.agentProvider === "claude" || input.agentProvider === "grok"
+        ? input.agentProvider
+        : null,
+    agentModel: typeof input.agentModel === "string" ? input.agentModel : null,
     pollingIntervalMs: typeof input.pollingIntervalMs === "number" ? input.pollingIntervalMs : null,
     maxConcurrentAgents: typeof input.maxConcurrentAgents === "number" ? input.maxConcurrentAgents : null,
     useGlobalLinearApiKey: input.useGlobalLinearApiKey === true,
+    useGlobalXaiApiKey: input.useGlobalXaiApiKey === true,
     useGlobalGithubToken: input.useGlobalGithubToken === true,
     useGlobalPollingIntervalMs: input.useGlobalPollingIntervalMs === true,
-    useGlobalMaxConcurrentAgents: input.useGlobalMaxConcurrentAgents === true
+    useGlobalMaxConcurrentAgents: input.useGlobalMaxConcurrentAgents === true,
+    useGlobalAgentProvider: input.useGlobalAgentProvider === true,
+    useGlobalAgentModel: input.useGlobalAgentModel === true
   };
 }
 
@@ -1791,9 +1809,12 @@ function defaultSetupContext(): DashboardSetupContext {
       envFilePath: path.resolve(process.cwd(), "workflows/.env.local"),
       defaults: {
         pollingIntervalMs: 30000,
-        maxConcurrentAgents: 10
+        maxConcurrentAgents: 10,
+        agentProvider: "codex",
+        agentModel: ""
       },
       hasLinearApiKey: false,
+      hasXaiApiKey: false,
       hasGithubToken: false
     }
   };

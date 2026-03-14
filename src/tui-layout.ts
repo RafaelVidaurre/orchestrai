@@ -180,5 +180,5 @@ function describeEvent(event: OperatorEvent): string {
     return `picked up from ${String(event.fields?.state ?? "active")}`;
   }
 
-  return event.message.replace(/^codex /, "");
+  return event.message.replace(/^(codex|claude|grok) /, "");
 }
