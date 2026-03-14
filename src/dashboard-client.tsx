@@ -33,17 +33,20 @@ import {
 import type {
   AgentProvider,
   AgentTranscriptEntry,
+  CodexReasoningEffort,
   DashboardBootstrap,
   DashboardSetupContext,
   GlobalConfigRecord,
   ManagedProjectRecord,
+  ProjectUsageMetrics,
   ProviderModelCatalog,
   ProjectSetupInput,
   ProjectSetupResult,
   ProjectUpdateInput,
   StatusRetryEntry,
   StatusRunningEntry,
-  StatusSnapshot
+  StatusSnapshot,
+  UsageMetricsSnapshot
 } from "./domain";
 import { agentModelOptions, isKnownAgentModel } from "./agent-models";
 import { buildTranscriptRenderBlocks, commandIconTone, commandTooltip } from "./transcript-render";
@@ -61,6 +64,7 @@ type GlobalFormState = {
   maxConcurrentAgents: string;
   agentProvider: AgentProvider;
   agentModel: string;
+  codexReasoningEffort: CodexReasoningEffort;
   linearApiKey: string;
   xaiApiKey: string;
   githubToken: string;
@@ -74,11 +78,13 @@ type ProjectFormState = {
   githubRepository: string;
   agentProvider: AgentProvider;
   agentModel: string;
+  codexReasoningEffort: CodexReasoningEffort;
   linearApiKey: string;
   xaiApiKey: string;
   githubToken: string;
   useGlobalAgentProvider: boolean;
   useGlobalAgentModel: boolean;
+  useGlobalCodexReasoningEffort: boolean;
   useGlobalLinearApiKey: boolean;
   useGlobalXaiApiKey: boolean;
   useGlobalGithubToken: boolean;
@@ -113,6 +119,7 @@ function DashboardApp() {
   const [projectModelCatalog, setProjectModelCatalog] = useState<ProviderModelCatalog>(() => fallbackModelCatalog("codex"));
   const [createProjectModelCatalog, setCreateProjectModelCatalog] = useState<ProviderModelCatalog>(() => fallbackModelCatalog("codex"));
   const [notice, setNotice] = useState<StatusNotice>(idleNotice());
+  const [usageMetrics, setUsageMetrics] = useState<UsageMetricsSnapshot>(() => emptyUsageMetrics());
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [selectedAgentIssueId, setSelectedAgentIssueId] = useState<string | null>(null);
   const sourceRef = useRef<EventSource | null>(null);
@@ -140,6 +147,10 @@ function DashboardApp() {
   const activeAgents = useMemo(() => sortRunningEntries(selectedSnapshot.running), [selectedSnapshot.running]);
   const queuedRetries = useMemo(() => sortRetryEntries(selectedSnapshot.retries), [selectedSnapshot.retries]);
   const selectedProjectSummary = selectedProject ? summaries.get(selectedProject.workflowPath) ?? null : null;
+  const selectedUsageMetrics = useMemo(
+    () => usageMetrics.projects.find((project) => project.workflow_path === selectedProjectId) ?? null,
+    [selectedProjectId, usageMetrics.projects]
+  );
   useEffect(() => {
     applyThemePreference(themePreference);
   }, [themePreference]);
@@ -235,6 +246,7 @@ function DashboardApp() {
 
     void refreshSetupContext(setSetupContext, setGlobalFormState);
     void refreshProjects(setProjects, setSelectedProjectId);
+    void refreshUsageMetrics(setUsageMetrics);
 
     if (!snapshot) {
       void fetchJson<StatusSnapshot>("/api/snapshot")
@@ -289,6 +301,30 @@ function DashboardApp() {
       if (sourceRef.current === source) {
         sourceRef.current = null;
       }
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = async () => {
+      try {
+        const nextMetrics = await fetchJson<UsageMetricsSnapshot>("/api/usage-metrics");
+        if (active) {
+          setUsageMetrics(nextMetrics);
+        }
+      } catch {
+        return;
+      }
+    };
+
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 15000);
+    void refresh();
+
+    return () => {
+      active = false;
+      window.clearInterval(timer);
     };
   }, []);
 
@@ -488,6 +524,12 @@ function DashboardApp() {
             note="Total consumed in focus scope"
             icon={<Minus size={16} />}
           />
+          <StatCard
+            label="Spend"
+            value={formatUsd(selectedProject ? selectedUsageMetrics?.current_month.cost_usd ?? 0 : usageMetrics.totals.current_month.cost_usd)}
+            note={selectedProject ? budgetLabel(selectedUsageMetrics) : "Current month across loaded projects"}
+            icon={<Activity size={16} />}
+          />
         </section>
 
         <section className="layout-grid">
@@ -514,6 +556,18 @@ function DashboardApp() {
               snapshot={selectedSnapshot}
               globalConfig={globalConfig}
               projectCount={projects.length}
+            />
+          </Surface>
+
+          <Surface
+            title={selectedProject ? "AI usage" : "Fleet AI usage"}
+            subtitle="Persistent token and spend tracking by project and model, with current-month budget visibility."
+          >
+            <UsageOverview
+              selectedProject={selectedProject}
+              usageMetrics={usageMetrics}
+              selectedUsageMetrics={selectedUsageMetrics}
+              setUsageMetrics={setUsageMetrics}
             />
           </Surface>
         </section>
@@ -743,6 +797,33 @@ function AgentModelField(props: {
   );
 }
 
+function CodexReasoningEffortField(props: {
+  label: string;
+  value: string;
+  disabled?: boolean;
+  help?: string;
+  onChange: (value: CodexReasoningEffort) => void;
+}) {
+  return (
+    <Field label={props.label}>
+      <select
+        className="input"
+        value={props.value}
+        disabled={props.disabled}
+        onChange={(event) => {
+          props.onChange(event.target.value);
+        }}
+      >
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+        <option value="xhigh">xhigh</option>
+      </select>
+      {props.help ? <div className="field-help">{props.help}</div> : null}
+    </Field>
+  );
+}
+
 function GlobalSettingsForm(props: {
   globalConfig: GlobalConfigRecord;
   formState: GlobalFormState;
@@ -863,6 +944,17 @@ function GlobalSettingsForm(props: {
             setFormState((current) => ({
               ...current,
               agentModel: value
+            }));
+          }}
+        />
+        <CodexReasoningEffortField
+          label="Shared Codex reasoning effort"
+          value={formState.codexReasoningEffort}
+          help="Only applies when the selected runtime provider is Codex."
+          onChange={(value) => {
+            setFormState((current) => ({
+              ...current,
+              codexReasoningEffort: value
             }));
           }}
         />
@@ -1086,6 +1178,22 @@ function ProjectSettingsForm(props: {
             setFormState((current) => ({ ...current, useGlobalAgentModel: checked }));
           }}
         />
+        <CodexReasoningEffortField
+          label="Codex reasoning effort"
+          value={formState.codexReasoningEffort}
+          disabled={formState.useGlobalCodexReasoningEffort}
+          help="Only used for Codex-backed projects."
+          onChange={(value) => {
+            setFormState((current) => ({ ...current, codexReasoningEffort: value }));
+          }}
+        />
+        <ToggleRow
+          checked={formState.useGlobalCodexReasoningEffort}
+          label="Use shared Codex reasoning effort"
+          onCheckedChange={(checked) => {
+            setFormState((current) => ({ ...current, useGlobalCodexReasoningEffort: checked }));
+          }}
+        />
         <Field label="Polling interval">
           <input
             className="input"
@@ -1247,6 +1355,9 @@ function AgentTable(props: {
                   <td>
                     <span className={joinClassName("phase-badge", agentState.tone)}>{agentState.label}</span>
                     <div className="row-subtitle">{entry.state}</div>
+                    <div className="row-subtitle">
+                      {entry.agent_provider} · {entry.agent_model || "provider default"}
+                    </div>
                   </td>
                   <td className="mono">{formatElapsedShort(props.nowMs - entry.started_at_ms)}</td>
                   <td className="mono">{formatInteger(entry.agent_total_tokens)}</td>
@@ -1317,6 +1428,9 @@ function AgentInlineTranscript(props: { entry: StatusRunningEntry; nowMs: number
           <span className={joinClassName("phase-badge", agentState.tone)}>{agentState.label}</span>
           <span className="meta-chip">
             <span>{formatInteger(entry.agent_total_tokens)} tokens</span>
+          </span>
+          <span className="meta-chip">
+            <span>{entry.agent_provider} · {entry.agent_model || "provider default"}</span>
           </span>
           <span className="meta-chip">
             <span>{formatElapsedShort(props.nowMs - entry.started_at_ms)} running</span>
@@ -1475,6 +1589,11 @@ function ProjectOverview(props: {
           value={selectedProject.usesGlobalGithubToken ? "Inherited" : selectedProject.hasGithubToken ? "Project override" : "Optional"}
         />
         <DetailItem
+          label="Codex reasoning"
+          value={selectedProject.codexReasoningEffort}
+          note={selectedProject.usesGlobalCodexReasoningEffort ? "Shared default" : "Project override"}
+        />
+        <DetailItem
           label="Polling"
           value={`${selectedProject.pollingIntervalMs} ms`}
           note={selectedProject.usesGlobalPollingIntervalMs ? "Shared default" : "Project override"}
@@ -1490,6 +1609,193 @@ function ProjectOverview(props: {
         />
       </div>
     </>
+  );
+}
+
+function UsageOverview(props: {
+  selectedProject: ManagedProjectRecord | null;
+  usageMetrics: UsageMetricsSnapshot;
+  selectedUsageMetrics: ProjectUsageMetrics | null;
+  setUsageMetrics: Dispatch<SetStateAction<UsageMetricsSnapshot>>;
+}) {
+  const { selectedProject, usageMetrics, selectedUsageMetrics, setUsageMetrics } = props;
+  const [budgetDraft, setBudgetDraft] = useState("");
+  const [budgetNotice, setBudgetNotice] = useState<StatusNotice>(idleNotice("Budgets compare against tracked current-month spend."));
+
+  useEffect(() => {
+    setBudgetDraft(
+      selectedUsageMetrics?.budget.monthly_budget_usd !== null && selectedUsageMetrics?.budget.monthly_budget_usd !== undefined
+        ? String(selectedUsageMetrics.budget.monthly_budget_usd)
+        : ""
+    );
+    setBudgetNotice(idleNotice("Budgets compare against tracked current-month spend."));
+  }, [selectedUsageMetrics?.workflow_path, selectedUsageMetrics?.budget.monthly_budget_usd]);
+
+  if (!selectedProject) {
+    if (usageMetrics.projects.length === 0) {
+      return <EmptyState title="No recorded usage yet" body="Usage history appears here once the runtime receives provider token updates." />;
+    }
+
+    return (
+      <div className="usage-stack">
+        <div className="detail-grid">
+          <DetailItem label="Current month spend" value={formatUsd(usageMetrics.totals.current_month.cost_usd)} />
+          <DetailItem label="Current month tokens" value={formatInteger(usageMetrics.totals.current_month.total_tokens)} />
+          <DetailItem label="Lifetime spend" value={formatUsd(usageMetrics.totals.lifetime.cost_usd)} />
+          <DetailItem label="Unpriced tokens" value={formatInteger(usageMetrics.totals.current_month.unpriced_total_tokens)} />
+        </div>
+        <div className="table-shell">
+          <table className="data-table usage-table">
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Budget</th>
+                <th>This month</th>
+                <th>Lifetime</th>
+                <th>Models</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usageMetrics.projects.slice(0, 10).map((project) => (
+                <tr key={project.workflow_path}>
+                  <td>
+                    <div className="row-title">{project.display_name ?? project.project_slug}</div>
+                    <div className="row-subtitle">{project.project_slug}</div>
+                  </td>
+                  <td>
+                    <span className={joinClassName("budget-pill", budgetTone(project.budget.status))}>
+                      {budgetStatusLabel(project.budget)}
+                    </span>
+                  </td>
+                  <td>
+                    <div className="row-title">{formatUsd(project.current_month.cost_usd)}</div>
+                    <div className="row-subtitle">{formatInteger(project.current_month.total_tokens)} tokens</div>
+                  </td>
+                  <td>
+                    <div className="row-title">{formatUsd(project.lifetime.cost_usd)}</div>
+                    <div className="row-subtitle">{formatInteger(project.lifetime.total_tokens)} tokens</div>
+                  </td>
+                  <td className="row-subtitle">
+                    {project.models.slice(0, 2).map((model) => model.model).join(", ") || "No model data yet"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  if (!selectedUsageMetrics) {
+    return <EmptyState title="No recorded usage yet" body="The selected project has not emitted any provider usage updates yet." />;
+  }
+
+  return (
+    <div className="usage-stack">
+      <div className="detail-grid">
+        <DetailItem
+          label="Current month spend"
+          value={formatUsd(selectedUsageMetrics.current_month.cost_usd)}
+          note={
+            selectedUsageMetrics.current_month.unpriced_total_tokens > 0
+              ? `${formatInteger(selectedUsageMetrics.current_month.unpriced_total_tokens)} unpriced tokens`
+              : "All current-month usage is priced"
+          }
+        />
+        <DetailItem label="Monthly budget" value={formatNullableUsd(selectedUsageMetrics.budget.monthly_budget_usd)} />
+        <DetailItem
+          label="Remaining budget"
+          value={
+            selectedUsageMetrics.budget.remaining_budget_usd !== null
+              ? formatUsd(selectedUsageMetrics.budget.remaining_budget_usd)
+              : "Not set"
+          }
+          tone={
+            selectedUsageMetrics.budget.status === "over_budget"
+              ? "bad"
+              : selectedUsageMetrics.budget.status === "within_budget"
+                ? "good"
+                : "muted"
+          }
+        />
+        <DetailItem label="Lifetime spend" value={formatUsd(selectedUsageMetrics.lifetime.cost_usd)} />
+      </div>
+
+      <form
+        className="budget-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void saveUsageBudget({
+            projectId: selectedProject.id,
+            budgetDraft,
+            setBudgetNotice,
+            setUsageMetrics
+          });
+        }}
+      >
+        <Field label="Monthly AI budget (USD)">
+          <input
+            className="input"
+            value={budgetDraft}
+            placeholder="Leave blank to clear"
+            onChange={(event) => {
+              setBudgetDraft(event.target.value);
+            }}
+          />
+        </Field>
+        <button className="button primary" type="submit" disabled={budgetNotice.kind === "saving"}>
+          Save budget
+        </button>
+        <div className={joinClassName("notice inline", budgetNotice.kind)}>{budgetNotice.message}</div>
+      </form>
+
+      <div className="table-shell">
+        <table className="data-table usage-table">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Provider</th>
+              <th>Tokens</th>
+              <th>Spend</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>
+            {selectedUsageMetrics.models.length === 0 ? (
+              <tr>
+                <td colSpan={5} className="row-subtitle">
+                  No model usage has been recorded for the current month yet.
+                </td>
+              </tr>
+            ) : (
+              selectedUsageMetrics.models.map((model) => (
+                <tr key={`${model.provider}:${model.model}`}>
+                  <td>
+                    <div className="row-title">{model.model}</div>
+                    <div className="row-subtitle">{formatRelativeTime(model.last_seen_at)}</div>
+                  </td>
+                  <td className="mono">{model.provider}</td>
+                  <td>
+                    <div className="row-title">{formatInteger(model.total_tokens)}</div>
+                    <div className="row-subtitle">
+                      {formatInteger(model.input_tokens)} in · {formatInteger(model.output_tokens)} out
+                    </div>
+                  </td>
+                  <td>
+                    <div className="row-title">{formatUsd(model.cost_usd)}</div>
+                    <div className="row-subtitle">
+                      {model.unpriced_total_tokens > 0 ? `${formatInteger(model.unpriced_total_tokens)} unpriced tokens` : "Fully priced"}
+                    </div>
+                  </td>
+                  <td className="row-subtitle">{humanizeCostSource(model.cost_source)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   );
 }
 
@@ -1908,6 +2214,11 @@ async function refreshProjects(
   });
 }
 
+async function refreshUsageMetrics(setUsageMetrics: Dispatch<SetStateAction<UsageMetricsSnapshot>>): Promise<void> {
+  const nextMetrics = await fetchJson<UsageMetricsSnapshot>("/api/usage-metrics");
+  setUsageMetrics(nextMetrics);
+}
+
 async function saveGlobalSettings(props: {
   formState: GlobalFormState;
   setNotice: Dispatch<SetStateAction<StatusNotice>>;
@@ -1925,6 +2236,7 @@ async function saveGlobalSettings(props: {
       maxConcurrentAgents: parseOptionalInteger(formState.maxConcurrentAgents),
       agentProvider: formState.agentProvider,
       agentModel: normalizeOptionalText(formState.agentModel),
+      codexReasoningEffort: formState.codexReasoningEffort,
       linearApiKey: normalizeOptionalText(formState.linearApiKey),
       xaiApiKey: normalizeOptionalText(formState.xaiApiKey),
       githubToken: normalizeOptionalText(formState.githubToken),
@@ -2042,6 +2354,36 @@ async function removeProject(
   }
 }
 
+async function saveUsageBudget(props: {
+  projectId: string;
+  budgetDraft: string;
+  setBudgetNotice: Dispatch<SetStateAction<StatusNotice>>;
+  setUsageMetrics: Dispatch<SetStateAction<UsageMetricsSnapshot>>;
+}): Promise<void> {
+  const { projectId, budgetDraft, setBudgetNotice, setUsageMetrics } = props;
+  const parsedBudget = parseOptionalFloat(budgetDraft);
+  if (budgetDraft.trim().length > 0 && parsedBudget === null) {
+    setBudgetNotice({ kind: "error", message: "Monthly budget must be a valid number." });
+    return;
+  }
+
+  setBudgetNotice({ kind: "saving", message: "Saving monthly budget..." });
+
+  try {
+    await fetchJson<ProjectUsageMetrics>("/api/usage-budgets", {
+      method: "PATCH",
+      body: JSON.stringify({
+        id: projectId,
+        monthlyBudgetUsd: parsedBudget
+      })
+    });
+    await refreshUsageMetrics(setUsageMetrics);
+    setBudgetNotice({ kind: "success", message: "Budget updated." });
+  } catch (error) {
+    setBudgetNotice({ kind: "error", message: errorMessage(error) });
+  }
+}
+
 function projectFormToApiInput(formState: ProjectFormState): ProjectSetupInput {
   return {
     displayName: normalizeOptionalText(formState.displayName),
@@ -2057,8 +2399,10 @@ function projectFormToApiInput(formState: ProjectFormState): ProjectSetupInput {
     useGlobalGithubToken: formState.useGlobalGithubToken,
     agentProvider: formState.agentProvider,
     agentModel: formState.agentModel.trim() || null,
+    codexReasoningEffort: formState.codexReasoningEffort,
     useGlobalAgentProvider: formState.useGlobalAgentProvider,
     useGlobalAgentModel: formState.useGlobalAgentModel,
+    useGlobalCodexReasoningEffort: formState.useGlobalCodexReasoningEffort,
     useGlobalPollingIntervalMs: formState.useGlobalPollingIntervalMs,
     useGlobalMaxConcurrentAgents: formState.useGlobalMaxConcurrentAgents
   };
@@ -2089,11 +2433,13 @@ function projectToForm(project: ManagedProjectRecord): ProjectFormState {
     githubRepository: project.githubRepository ?? "",
     agentProvider: project.agentProvider,
     agentModel: project.agentModel ?? "",
+    codexReasoningEffort: project.codexReasoningEffort,
     linearApiKey: "",
     xaiApiKey: "",
     githubToken: "",
     useGlobalAgentProvider: project.usesGlobalAgentProvider,
     useGlobalAgentModel: project.usesGlobalAgentModel,
+    useGlobalCodexReasoningEffort: project.usesGlobalCodexReasoningEffort,
     useGlobalLinearApiKey: project.usesGlobalLinearApiKey,
     useGlobalXaiApiKey: project.usesGlobalXaiApiKey,
     useGlobalGithubToken: project.usesGlobalGithubToken,
@@ -2126,6 +2472,7 @@ function globalConfigToForm(globalConfig: GlobalConfigRecord): GlobalFormState {
     maxConcurrentAgents: String(globalConfig.defaults.maxConcurrentAgents),
     agentProvider: globalConfig.defaults.agentProvider,
     agentModel: globalConfig.defaults.agentModel,
+    codexReasoningEffort: globalConfig.defaults.codexReasoningEffort,
     linearApiKey: "",
     xaiApiKey: "",
     githubToken: "",
@@ -2141,6 +2488,7 @@ function emptyGlobalForm(): GlobalFormState {
     maxConcurrentAgents: "10",
     agentProvider: "codex",
     agentModel: "",
+    codexReasoningEffort: "medium",
     linearApiKey: "",
     xaiApiKey: "",
     githubToken: "",
@@ -2157,8 +2505,10 @@ function emptyProjectForm(): ProjectFormState {
     githubRepository: "",
     agentProvider: "codex",
     agentModel: "",
+    codexReasoningEffort: "medium",
     useGlobalAgentProvider: true,
     useGlobalAgentModel: true,
+    useGlobalCodexReasoningEffort: true,
     linearApiKey: "",
     xaiApiKey: "",
     githubToken: "",
@@ -2180,7 +2530,8 @@ function emptyGlobalConfig(): GlobalConfigRecord {
       pollingIntervalMs: 30000,
       maxConcurrentAgents: 10,
       agentProvider: "codex",
-      agentModel: ""
+      agentModel: "",
+      codexReasoningEffort: "medium"
     },
     hasLinearApiKey: false,
     hasXaiApiKey: false,
@@ -2207,6 +2558,30 @@ function emptySnapshot(): StatusSnapshot {
       secondsRunning: 0
     },
     recent_events: []
+  };
+}
+
+function emptyUsageMetrics(): UsageMetricsSnapshot {
+  return {
+    updated_at: new Date(0).toISOString(),
+    current_month: new Date().toISOString().slice(0, 7),
+    projects: [],
+    totals: {
+      lifetime: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        cost_usd: 0,
+        unpriced_total_tokens: 0
+      },
+      current_month: {
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        cost_usd: 0,
+        unpriced_total_tokens: 0
+      }
+    }
   };
 }
 
@@ -2300,6 +2675,16 @@ function parseOptionalInteger(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseOptionalFloat(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const parsed = Number.parseFloat(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizeOptionalText(value: string | null | undefined): string | null {
   if (typeof value !== "string") {
     return null;
@@ -2380,6 +2765,76 @@ async function fetchVoid(url: string, init?: RequestInit): Promise<void> {
 
 function formatInteger(value: number): string {
   return new Intl.NumberFormat().format(value);
+}
+
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: value >= 100 ? 0 : 2,
+    maximumFractionDigits: value >= 100 ? 0 : 2
+  }).format(value);
+}
+
+function formatNullableUsd(value: number | null): string {
+  return value === null ? "Not set" : formatUsd(value);
+}
+
+function budgetLabel(metrics: ProjectUsageMetrics | null): string {
+  if (!metrics) {
+    return "No tracked usage yet";
+  }
+
+  if (metrics.budget.monthly_budget_usd === null) {
+    return "No budget set";
+  }
+
+  return `${budgetStatusLabel(metrics.budget)} · ${formatNullableUsd(metrics.budget.remaining_budget_usd)} left`;
+}
+
+function budgetStatusLabel(budget: ProjectUsageMetrics["budget"]): string {
+  switch (budget.status) {
+    case "within_budget":
+      return "Within budget";
+    case "near_budget":
+      return "Near budget";
+    case "over_budget":
+      return "Over budget";
+    case "partial":
+      return "Partial pricing";
+    case "no_budget":
+    default:
+      return "No budget";
+  }
+}
+
+function budgetTone(status: ProjectUsageMetrics["budget"]["status"]): string {
+  switch (status) {
+    case "within_budget":
+      return "good";
+    case "near_budget":
+      return "warn";
+    case "over_budget":
+      return "bad";
+    case "partial":
+    case "no_budget":
+    default:
+      return "muted";
+  }
+}
+
+function humanizeCostSource(source: ProjectUsageMetrics["models"][number]["cost_source"]): string {
+  switch (source) {
+    case "actual":
+      return "Provider-reported";
+    case "official":
+      return "Official pricing";
+    case "estimated_alias":
+      return "Alias estimate";
+    case "unknown":
+    default:
+      return "Unpriced";
+  }
 }
 
 function readThemePreference(): ThemePreference {

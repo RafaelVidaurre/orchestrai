@@ -4,6 +4,7 @@ import type {
   AgentActivityEntry,
   AgentTranscriptEntry,
   AgentRuntimeEvent,
+  AgentUsageSnapshot,
   Issue,
   LinearProjectInfo,
   LinearRateLimits,
@@ -71,6 +72,19 @@ export class Orchestrator {
   private readonly recentEvents: OperatorEvent[] = [];
   private readonly workflowPath: string;
   private readonly onFatalError: ((input: FatalRuntimeErrorInput) => Promise<boolean | void> | boolean | void) | null;
+  private readonly onUsageDelta:
+    | ((
+        input: {
+          workflowPath: string;
+          projectSlug: string;
+          displayName: string | null;
+          provider: AgentRuntimeEvent["provider"];
+          model: string;
+          usage: AgentUsageSnapshot;
+          observedAt: string;
+        }
+      ) => Promise<void> | void)
+    | null;
 
   constructor(
     workflowPath: string,
@@ -78,6 +92,15 @@ export class Orchestrator {
     env: NodeJS.ProcessEnv = process.env,
     options: {
       onFatalError?: (input: FatalRuntimeErrorInput) => Promise<boolean | void> | boolean | void;
+      onUsageDelta?: (input: {
+        workflowPath: string;
+        projectSlug: string;
+        displayName: string | null;
+        provider: AgentRuntimeEvent["provider"];
+        model: string;
+        usage: AgentUsageSnapshot;
+        observedAt: string;
+      }) => Promise<void> | void;
     } = {}
   ) {
     this.workflowPath = path.resolve(workflowPath);
@@ -85,6 +108,7 @@ export class Orchestrator {
     this.workflowManager = new WorkflowManager(this.workflowPath, this.logger.child({ component: "workflow" }), env);
     this.workspaceManager = new WorkspaceManager(this.logger.child({ component: "workspace" }));
     this.onFatalError = options.onFatalError ?? null;
+    this.onUsageDelta = options.onUsageDelta ?? null;
   }
 
   async start(): Promise<void> {
@@ -193,6 +217,7 @@ export class Orchestrator {
         priority: entry.issue.priority,
         attempt: entry.retryAttempt,
         agent_provider: entry.agentProvider,
+        agent_model: entry.agentModel,
         session_id: entry.sessionId,
         thread_id: entry.threadId,
         turn_id: entry.turnId,
@@ -313,6 +338,7 @@ export class Orchestrator {
       issue,
       identifier: issue.identifier,
       agentProvider: workflow.config.runtime.provider,
+      agentModel: workflow.config.runtime.model,
       retryAttempt: attempt,
       startedAtMs: Date.now(),
       worker,
@@ -329,6 +355,9 @@ export class Orchestrator {
       lastReportedInputTokens: 0,
       lastReportedOutputTokens: 0,
       lastReportedTotalTokens: 0,
+      lastReportedCacheReadInputTokens: 0,
+      lastReportedCacheCreationInputTokens: 0,
+      lastReportedCostUsd: 0,
       turnCount: 0,
       cancellingReason: null,
       phase: "queued",
@@ -699,6 +728,15 @@ export class Orchestrator {
       const inputDelta = Math.max(0, event.usage.input_tokens - entry.lastReportedInputTokens);
       const outputDelta = Math.max(0, event.usage.output_tokens - entry.lastReportedOutputTokens);
       const totalDelta = Math.max(0, event.usage.total_tokens - entry.lastReportedTotalTokens);
+      const cacheReadDelta = Math.max(
+        0,
+        (event.usage.cache_read_input_tokens ?? 0) - entry.lastReportedCacheReadInputTokens
+      );
+      const cacheCreationDelta = Math.max(
+        0,
+        (event.usage.cache_creation_input_tokens ?? 0) - entry.lastReportedCacheCreationInputTokens
+      );
+      const costDelta = Math.max(0, (event.usage.cost_usd ?? 0) - entry.lastReportedCostUsd);
       this.agentTotals.inputTokens += inputDelta;
       this.agentTotals.outputTokens += outputDelta;
       this.agentTotals.totalTokens += totalDelta;
@@ -708,6 +746,36 @@ export class Orchestrator {
       entry.lastReportedInputTokens = event.usage.input_tokens;
       entry.lastReportedOutputTokens = event.usage.output_tokens;
       entry.lastReportedTotalTokens = event.usage.total_tokens;
+      entry.lastReportedCacheReadInputTokens = event.usage.cache_read_input_tokens ?? 0;
+      entry.lastReportedCacheCreationInputTokens = event.usage.cache_creation_input_tokens ?? 0;
+      entry.lastReportedCostUsd = event.usage.cost_usd ?? 0;
+      if ((inputDelta > 0 || outputDelta > 0 || totalDelta > 0 || costDelta > 0) && this.onUsageDelta) {
+        const projectInfo = this.currentProjectInfo();
+        void Promise.resolve(
+          this.onUsageDelta({
+            workflowPath: this.currentWorkflow?.config.workflowPath ?? this.workflowPath,
+            projectSlug: projectInfo.slug,
+            displayName: this.currentWorkflow?.config.project.displayName ?? null,
+            provider: entry.agentProvider,
+            model: entry.agentModel,
+            observedAt: event.timestamp,
+            usage: {
+              input_tokens: inputDelta,
+              output_tokens: outputDelta,
+              total_tokens: totalDelta,
+              cache_read_input_tokens: cacheReadDelta || undefined,
+              cache_creation_input_tokens: cacheCreationDelta || undefined,
+              cost_usd: costDelta || undefined
+            }
+          })
+        ).catch((error) => {
+          this.logger.warn("usage metrics update failed", {
+            workflow_path: this.workflowPath,
+            issue_id: issueId,
+            error_message: error instanceof Error ? error.message : String(error)
+          });
+        });
+      }
     }
 
     if (event.rateLimits !== undefined) {

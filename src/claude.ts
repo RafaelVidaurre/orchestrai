@@ -459,11 +459,18 @@ function extractClaudeUsage(usage: unknown): AgentUsageSnapshot | undefined {
   const outputTokens = coerceNumber(usageRecord.output_tokens);
   const cacheReadTokens = coerceNumber(usageRecord.cache_read_input_tokens);
   const cacheCreationTokens = coerceNumber(usageRecord.cache_creation_input_tokens);
+  const totalInputTokens = inputTokens + cacheReadTokens + cacheCreationTokens;
+  const totalTokens = totalInputTokens + outputTokens;
+  if (totalTokens === 0) {
+    return undefined;
+  }
 
   return {
-    input_tokens: inputTokens + cacheReadTokens + cacheCreationTokens,
+    input_tokens: totalInputTokens,
     output_tokens: outputTokens,
-    total_tokens: inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens
+    total_tokens: totalTokens,
+    cache_read_input_tokens: cacheReadTokens || undefined,
+    cache_creation_input_tokens: cacheCreationTokens || undefined
   };
 }
 

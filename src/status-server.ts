@@ -10,13 +10,17 @@ import type {
   GlobalConfigInput,
   GlobalConfigRecord,
   ManagedProjectRecord,
+  ProjectUsageBudgetInput,
+  ProjectUsageMetrics,
   ProjectRuntimeControlInput,
   ProjectSetupInput,
   ProjectSetupResult,
   ProjectUpdateInput,
   StatusSnapshot,
-  StatusSource
+  StatusSource,
+  UsageMetricsSnapshot
 } from "./domain";
+import { normalizeCodexReasoningEffort } from "./domain";
 import { dashboardStyles } from "./dashboard-styles";
 import { ServiceError } from "./errors";
 import { validateGlobalConfigInput } from "./global-config";
@@ -27,6 +31,8 @@ export interface DashboardProjectSetupService {
   readGlobalConfig(): Promise<GlobalConfigRecord>;
   updateGlobalConfig(input: GlobalConfigInput): Promise<GlobalConfigRecord>;
   listProviderModels(input: ProviderModelQuery): Promise<ProviderModelCatalog>;
+  usageMetrics(): Promise<UsageMetricsSnapshot>;
+  updateUsageBudget(input: ProjectUsageBudgetInput): Promise<ProjectUsageMetrics>;
   listProjects(): Promise<ManagedProjectRecord[]>;
   createProject(input: ProjectSetupInput): Promise<ProjectSetupResult>;
   updateProject(input: ProjectUpdateInput): Promise<ManagedProjectRecord>;
@@ -163,6 +169,16 @@ export class StatusServer {
       return;
     }
 
+    if (request.method === "GET" && url.pathname === "/api/usage-metrics") {
+      await this.handleUsageMetrics(response);
+      return;
+    }
+
+    if (request.method === "PATCH" && url.pathname === "/api/usage-budgets") {
+      await this.handleUsageBudgetUpdate(request, response);
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/projects") {
       await this.handleListProjects(response);
       return;
@@ -269,6 +285,45 @@ export class StatusServer {
       const statusCode = error instanceof ServiceError && error.code === "invalid_project_setup" ? 400 : 500;
       response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ error: error instanceof Error ? error.message : "Failed to list provider models" }));
+    }
+  }
+
+  private async handleUsageMetrics(response: http.ServerResponse): Promise<void> {
+    if (!this.projectSetupService) {
+      response.writeHead(503, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: "Project setup is not available in this runtime." }));
+      return;
+    }
+
+    try {
+      const metrics = await this.projectSetupService.usageMetrics();
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(metrics));
+    } catch (error) {
+      response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: error instanceof Error ? error.message : "Failed to read usage metrics" }));
+    }
+  }
+
+  private async handleUsageBudgetUpdate(
+    request: http.IncomingMessage,
+    response: http.ServerResponse
+  ): Promise<void> {
+    if (!this.projectSetupService) {
+      response.writeHead(503, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: "Project setup is not available in this runtime." }));
+      return;
+    }
+
+    try {
+      const body = await readJsonBody(request);
+      const result = await this.projectSetupService.updateUsageBudget(validateProjectUsageBudgetInput(body));
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      const statusCode = error instanceof ServiceError && error.code === "invalid_project_setup" ? 400 : 500;
+      response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: error instanceof Error ? error.message : "Failed to update usage budget" }));
     }
   }
 
@@ -1750,6 +1805,7 @@ function validateProjectSetupInput(value: unknown): ProjectSetupInput {
   }
 
   const input = value as Record<string, unknown>;
+  const codexReasoningEffort = validateOptionalCodexReasoningEffort(input.codexReasoningEffort);
   return {
     displayName: typeof input.displayName === "string" ? input.displayName : null,
     projectSlug: typeof input.projectSlug === "string" ? input.projectSlug : "",
@@ -1762,6 +1818,7 @@ function validateProjectSetupInput(value: unknown): ProjectSetupInput {
         ? input.agentProvider
         : null,
     agentModel: typeof input.agentModel === "string" ? input.agentModel : null,
+    codexReasoningEffort,
     pollingIntervalMs: typeof input.pollingIntervalMs === "number" ? input.pollingIntervalMs : null,
     maxConcurrentAgents: typeof input.maxConcurrentAgents === "number" ? input.maxConcurrentAgents : null,
     useGlobalLinearApiKey: input.useGlobalLinearApiKey === true,
@@ -1770,7 +1827,8 @@ function validateProjectSetupInput(value: unknown): ProjectSetupInput {
     useGlobalPollingIntervalMs: input.useGlobalPollingIntervalMs !== false,
     useGlobalMaxConcurrentAgents: input.useGlobalMaxConcurrentAgents !== false,
     useGlobalAgentProvider: input.useGlobalAgentProvider === true,
-    useGlobalAgentModel: input.useGlobalAgentModel === true
+    useGlobalAgentModel: input.useGlobalAgentModel === true,
+    useGlobalCodexReasoningEffort: input.useGlobalCodexReasoningEffort !== false
   };
 }
 
@@ -1780,6 +1838,7 @@ function validateProjectUpdateInput(value: unknown): ProjectUpdateInput {
   }
 
   const input = value as Record<string, unknown>;
+  const codexReasoningEffort = validateOptionalCodexReasoningEffort(input.codexReasoningEffort);
   if (typeof input.id !== "string" || input.id.trim().length === 0) {
     throw new ServiceError("invalid_project_setup", "Project id is required");
   }
@@ -1796,6 +1855,7 @@ function validateProjectUpdateInput(value: unknown): ProjectUpdateInput {
         ? input.agentProvider
         : null,
     agentModel: typeof input.agentModel === "string" ? input.agentModel : null,
+    codexReasoningEffort,
     pollingIntervalMs: typeof input.pollingIntervalMs === "number" ? input.pollingIntervalMs : null,
     maxConcurrentAgents: typeof input.maxConcurrentAgents === "number" ? input.maxConcurrentAgents : null,
     useGlobalLinearApiKey: input.useGlobalLinearApiKey === true,
@@ -1804,7 +1864,8 @@ function validateProjectUpdateInput(value: unknown): ProjectUpdateInput {
     useGlobalPollingIntervalMs: input.useGlobalPollingIntervalMs === true,
     useGlobalMaxConcurrentAgents: input.useGlobalMaxConcurrentAgents === true,
     useGlobalAgentProvider: input.useGlobalAgentProvider === true,
-    useGlobalAgentModel: input.useGlobalAgentModel === true
+    useGlobalAgentModel: input.useGlobalAgentModel === true,
+    useGlobalCodexReasoningEffort: input.useGlobalCodexReasoningEffort === true
   };
 }
 
@@ -1824,6 +1885,44 @@ function validateProjectDeleteInput(value: unknown): { id: string } {
 
 function validateProjectRuntimeControlInput(value: unknown): ProjectRuntimeControlInput {
   return validateProjectDeleteInput(value);
+}
+
+function validateProjectUsageBudgetInput(value: unknown): ProjectUsageBudgetInput {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ServiceError("invalid_project_setup", "Usage budget payload must be a JSON object");
+  }
+
+  const input = value as Record<string, unknown>;
+  if (typeof input.id !== "string" || input.id.trim().length === 0) {
+    throw new ServiceError("invalid_project_setup", "Project id is required");
+  }
+
+  if (input.monthlyBudgetUsd !== null && input.monthlyBudgetUsd !== undefined && typeof input.monthlyBudgetUsd !== "number") {
+    throw new ServiceError("invalid_project_setup", "Monthly budget must be a number or null");
+  }
+
+  return {
+    id: input.id,
+    monthlyBudgetUsd:
+      typeof input.monthlyBudgetUsd === "number" && Number.isFinite(input.monthlyBudgetUsd) ? input.monthlyBudgetUsd : null
+  };
+}
+
+function validateOptionalCodexReasoningEffort(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = normalizeCodexReasoningEffort(value);
+  if (!normalized) {
+    throw new ServiceError("invalid_project_setup", "Codex reasoning effort must be low, medium, high, or xhigh");
+  }
+
+  return normalized;
 }
 
 function validateProviderModelQuery(value: unknown): ProviderModelQuery {
@@ -1856,7 +1955,8 @@ function defaultSetupContext(): DashboardSetupContext {
         pollingIntervalMs: 30000,
         maxConcurrentAgents: 10,
         agentProvider: "codex",
-        agentModel: ""
+        agentModel: "",
+        codexReasoningEffort: "medium"
       },
       hasLinearApiKey: false,
       hasXaiApiKey: false,

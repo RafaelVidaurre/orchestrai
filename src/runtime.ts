@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { FatalProjectError, LoadedWorkflow, StatusProjectState, StatusSnapshot, StatusSource } from "./domain";
+import type { AgentUsageSnapshot, FatalProjectError, LoadedWorkflow, StatusProjectState, StatusSnapshot, StatusSource } from "./domain";
 import { buildServiceConfig } from "./config";
 import { loadWorkflowEnv } from "./env";
 import {
@@ -32,6 +32,15 @@ interface WorkflowRuntimeState {
 
 interface RuntimeManagerOptions {
   onFatalError?: (input: FatalRuntimeErrorInput) => Promise<FatalProjectError>;
+  onUsageDelta?: (input: {
+    workflowPath: string;
+    projectSlug: string;
+    displayName: string | null;
+    provider: "codex" | "claude" | "grok";
+    model: string;
+    usage: AgentUsageSnapshot;
+    observedAt: string;
+  }) => Promise<void>;
 }
 
 export class RuntimeManager implements StatusSource {
@@ -241,7 +250,8 @@ export class RuntimeManager implements StatusSource {
       this.projectsRoot
     );
     const orchestrator = new Orchestrator(workflowPath, scopedLogger, env, {
-      onFatalError: (input) => this.handleFatalError(input)
+      onFatalError: (input) => this.handleFatalError(input),
+      onUsageDelta: (input) => this.options.onUsageDelta?.(input)
     });
 
     try {

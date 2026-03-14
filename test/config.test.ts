@@ -112,9 +112,8 @@ describe("buildServiceConfig", () => {
     };
 
     const config = buildServiceConfig("/tmp/workflow.md", workflow, {});
-    expect(config.codex.command).toBe(
-      "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server"
-    );
+    expect(config.codex.command).toBe("codex --config shell_environment_policy.inherit=all app-server");
+    expect(config.codex.reasoningEffort).toBe("medium");
     expect(config.codex.approvalPolicy).toEqual({
       reject: {
         sandbox_approval: true,
@@ -154,6 +153,44 @@ describe("buildServiceConfig", () => {
     expect(config.claude.command).toBe("claude");
     expect(config.claude.permissionMode).toBe("plan");
     expect(config.claude.maxBudgetUsd).toBe(4.5);
+  });
+
+  it("supports a global default Codex reasoning effort override", () => {
+    const workflow: WorkflowDefinition = {
+      config: {
+        tracker: {
+          kind: "linear",
+          api_key: "token",
+          project_slug: "project-alpha"
+        }
+      },
+      prompt_template: "hello"
+    };
+
+    const config = buildServiceConfig("/tmp/workflow.md", workflow, {
+      ORCHESTRAI_DEFAULT_CODEX_REASONING_EFFORT: "high"
+    });
+
+    expect(config.codex.reasoningEffort).toBe("high");
+  });
+
+  it("falls back to medium when the global default Codex reasoning effort is invalid", () => {
+    const workflow: WorkflowDefinition = {
+      config: {
+        tracker: {
+          kind: "linear",
+          api_key: "token",
+          project_slug: "project-alpha"
+        }
+      },
+      prompt_template: "hello"
+    };
+
+    const config = buildServiceConfig("/tmp/workflow.md", workflow, {
+      ORCHESTRAI_DEFAULT_CODEX_REASONING_EFFORT: "turbo"
+    });
+
+    expect(config.codex.reasoningEffort).toBe("medium");
   });
 
   it("supports Grok runtime selection with XAI credentials and default coding model", () => {

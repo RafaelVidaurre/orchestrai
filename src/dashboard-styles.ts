@@ -448,7 +448,7 @@ export const dashboardStyles = `
 
   .stat-grid {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 14px;
     margin-bottom: 18px;
   }
@@ -963,6 +963,49 @@ export const dashboardStyles = `
     border: 1px solid var(--border);
   }
 
+  .usage-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .usage-table .row-title {
+    font-size: 0.92rem;
+  }
+
+  .budget-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: end;
+  }
+
+  .budget-pill {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 999px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    background: var(--muted);
+    font-size: 0.82rem;
+    color: var(--muted-foreground);
+  }
+
+  .budget-pill.good {
+    color: var(--success);
+    border-color: color-mix(in srgb, var(--success) 32%, var(--border) 68%);
+  }
+
+  .budget-pill.warn {
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent) 36%, var(--border) 64%);
+  }
+
+  .budget-pill.bad {
+    color: var(--destructive);
+    border-color: color-mix(in srgb, var(--destructive) 32%, var(--border) 68%);
+  }
+
   .detail-value.good {
     color: var(--success);
   }
@@ -1238,6 +1281,12 @@ export const dashboardStyles = `
     line-height: 1.45;
   }
 
+  .notice.inline {
+    flex: none;
+    align-self: center;
+    font-size: 0.88rem;
+  }
+
   .notice.success {
     color: var(--success);
   }
@@ -1281,6 +1330,10 @@ export const dashboardStyles = `
     .stat-grid,
     .detail-grid,
     .field-grid.two-up {
+      grid-template-columns: 1fr;
+    }
+
+    .budget-form {
       grid-template-columns: 1fr;
     }
 

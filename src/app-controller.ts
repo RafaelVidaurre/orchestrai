@@ -5,6 +5,8 @@ import type {
   GlobalConfigInput,
   GlobalConfigRecord,
   ManagedProjectRecord,
+  ProjectUsageBudgetInput,
+  ProjectUsageMetrics,
   ProviderModelCatalog,
   ProviderModelQuery,
   ProjectRuntimeControlInput,
@@ -12,7 +14,8 @@ import type {
   ProjectSetupResult,
   ProjectUpdateInput,
   StatusSnapshot,
-  StatusSource
+  StatusSource,
+  UsageMetricsSnapshot
 } from "./domain";
 import { Logger } from "./logger";
 import {
@@ -28,6 +31,7 @@ import { readGlobalConfig, updateGlobalConfig } from "./global-config";
 import { RuntimeManager } from "./runtime";
 import { listProviderModels } from "./provider-models";
 import { StatusServer } from "./status-server";
+import { UsageMetricsStore } from "./usage-metrics";
 import type { WorkflowContext } from "./workflow";
 
 const DEFAULT_DASHBOARD_HOST = "127.0.0.1";
@@ -43,6 +47,7 @@ export interface AppControlState {
 
 export class AppController implements StatusSource {
   private readonly runtime: RuntimeManager;
+  private readonly usageMetricsStore: UsageMetricsStore;
   private readonly knownWorkflowPaths: Set<string>;
   private readonly subscribers = new Set<(state: AppControlState) => void>();
   private readonly setupContextValue: DashboardSetupContext;
@@ -56,13 +61,17 @@ export class AppController implements StatusSource {
     private readonly env: NodeJS.ProcessEnv = process.env
   ) {
     this.knownWorkflowPaths = new Set(workflowContext.workflowPaths.map((workflowPath) => path.resolve(workflowPath)));
+    this.usageMetricsStore = new UsageMetricsStore(workflowContext.projectsRoot);
     this.runtime = new RuntimeManager(
       [...this.knownWorkflowPaths],
       path.resolve(workflowContext.projectsRoot),
       logger.child({ component: "runtime-manager" }),
       env,
       {
-        onFatalError: async (input) => this.handleFatalWorkflowError(input)
+        onFatalError: async (input) => this.handleFatalWorkflowError(input),
+        onUsageDelta: async (input) => {
+          await this.usageMetricsStore.recordUsage(input);
+        }
       }
     );
     this.setupContextValue = {
@@ -76,7 +85,8 @@ export class AppController implements StatusSource {
           pollingIntervalMs: 30000,
           maxConcurrentAgents: 10,
           agentProvider: "codex",
-          agentModel: ""
+          agentModel: "",
+          codexReasoningEffort: "medium"
         },
         hasLinearApiKey: false,
         hasXaiApiKey: false,
@@ -101,6 +111,7 @@ export class AppController implements StatusSource {
   async stop(): Promise<void> {
     await this.stopDashboard();
     await this.stopRuntime();
+    await this.usageMetricsStore.flush().catch(() => undefined);
   }
 
   async startRuntime(): Promise<void> {
@@ -203,6 +214,14 @@ export class AppController implements StatusSource {
     });
   }
 
+  async usageMetrics(): Promise<UsageMetricsSnapshot> {
+    return this.usageMetricsStore.snapshot(this.knownWorkflowPaths);
+  }
+
+  async updateUsageBudget(input: ProjectUsageBudgetInput): Promise<ProjectUsageMetrics> {
+    return this.usageMetricsStore.updateBudget(input);
+  }
+
   async updateGlobalConfig(input: GlobalConfigInput): Promise<GlobalConfigRecord> {
     const next = await updateGlobalConfig(this.workflowContext.projectsRoot, input, this.env);
     this.setupContextValue.globalConfig = next;
@@ -251,6 +270,7 @@ export class AppController implements StatusSource {
     await this.runtime.removeWorkflow(workflowPath);
     this.knownWorkflowPaths.delete(workflowPath);
     await removeProjectSetup(workflowPath);
+    await this.usageMetricsStore.removeProject(workflowPath);
     this.publishState();
   }
 

@@ -30,7 +30,8 @@ agent:
 runtime:
   provider: codex
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server
+  command: codex --config shell_environment_policy.inherit=all app-server
+  reasoning_effort: medium
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy:

@@ -3,7 +3,14 @@ import path from "node:path";
 
 import { parse } from "dotenv";
 
-import type { AgentProvider, GlobalConfigInput, GlobalConfigRecord } from "./domain";
+import {
+  coerceCodexReasoningEffort,
+  normalizeCodexReasoningEffort,
+  type AgentProvider,
+  type CodexReasoningEffort,
+  type GlobalConfigInput,
+  type GlobalConfigRecord
+} from "./domain";
 import { ServiceError } from "./errors";
 import { loadEnvFiles } from "./env";
 
@@ -11,6 +18,7 @@ const DEFAULT_POLL_INTERVAL_MS = 30000;
 const DEFAULT_MAX_CONCURRENT_AGENTS = 10;
 const DEFAULT_AGENT_PROVIDER: AgentProvider = "codex";
 const DEFAULT_AGENT_MODEL = "";
+const DEFAULT_CODEX_REASONING_EFFORT: CodexReasoningEffort = "medium";
 
 export async function readGlobalConfig(
   projectsRoot: string,
@@ -33,6 +41,10 @@ export async function readGlobalConfig(
       agentModel: coerceAgentModel(
         env.ORCHESTRAI_DEFAULT_AGENT_MODEL ?? env.ORCHESTRAI_DEFAULT_CODEX_MODEL,
         DEFAULT_AGENT_MODEL
+      ),
+      codexReasoningEffort: coerceCodexReasoningEffort(
+        env.ORCHESTRAI_DEFAULT_CODEX_REASONING_EFFORT,
+        DEFAULT_CODEX_REASONING_EFFORT
       )
     },
     hasLinearApiKey: typeof env.LINEAR_API_KEY === "string" && env.LINEAR_API_KEY.length > 0,
@@ -60,7 +72,11 @@ export async function updateGlobalConfig(
       coercePositiveInteger(input.maxConcurrentAgents, effective.defaults.maxConcurrentAgents)
     ),
     ORCHESTRAI_DEFAULT_AGENT_PROVIDER: coerceAgentProvider(input.agentProvider, effective.defaults.agentProvider),
-    ORCHESTRAI_DEFAULT_AGENT_MODEL: coerceAgentModel(input.agentModel, effective.defaults.agentModel)
+    ORCHESTRAI_DEFAULT_AGENT_MODEL: coerceAgentModel(input.agentModel, effective.defaults.agentModel),
+    ORCHESTRAI_DEFAULT_CODEX_REASONING_EFFORT: coerceCodexReasoningEffort(
+      input.codexReasoningEffort,
+      effective.defaults.codexReasoningEffort
+    )
   };
 
   if (input.clearLinearApiKey) {
@@ -102,6 +118,14 @@ export function validateGlobalConfigInput(value: unknown): GlobalConfigInput {
   }
 
   const input = value as Record<string, unknown>;
+  const codexReasoningEffort =
+    input.codexReasoningEffort === undefined || input.codexReasoningEffort === null
+      ? null
+      : normalizeCodexReasoningEffort(input.codexReasoningEffort);
+  if (input.codexReasoningEffort !== undefined && input.codexReasoningEffort !== null && !codexReasoningEffort) {
+    throw new ServiceError("invalid_project_setup", "Codex reasoning effort must be low, medium, high, or xhigh");
+  }
+
   return {
     pollingIntervalMs: typeof input.pollingIntervalMs === "number" ? input.pollingIntervalMs : null,
     maxConcurrentAgents: typeof input.maxConcurrentAgents === "number" ? input.maxConcurrentAgents : null,
@@ -110,6 +134,7 @@ export function validateGlobalConfigInput(value: unknown): GlobalConfigInput {
         ? input.agentProvider
         : null,
     agentModel: typeof input.agentModel === "string" ? input.agentModel : null,
+    codexReasoningEffort,
     linearApiKey: typeof input.linearApiKey === "string" ? input.linearApiKey : null,
     xaiApiKey: typeof input.xaiApiKey === "string" ? input.xaiApiKey : null,
     githubToken: typeof input.githubToken === "string" ? input.githubToken : null,

@@ -57,7 +57,10 @@ export class CodexAppServerSession {
   ) {}
 
   async start(): Promise<void> {
-    const command = injectCodexModel(this.config.codex.command, this.config.runtime.model);
+    const command = injectCodexReasoningEffort(
+      injectCodexModel(this.config.codex.command, this.config.runtime.model),
+      this.config.codex.reasoningEffort
+    );
     this.child = spawn("bash", ["-lc", command], {
       cwd: this.workspacePath,
       env: this.env,
@@ -688,6 +691,27 @@ function injectCodexModel(command: string, model: string): string {
 
   const insertionIndex = appServerMatch.index + appServerMatch[1].length;
   return `${command.slice(0, insertionIndex)}${modelArg} ${command.slice(insertionIndex)}`.trim();
+}
+
+function injectCodexReasoningEffort(command: string, reasoningEffort: string): string {
+  const trimmedEffort = reasoningEffort.trim();
+  if (!trimmedEffort) {
+    return command;
+  }
+
+  const hasExplicitEffort = /(^|\s)--config\s+model_reasoning_effort=/.test(command);
+  if (hasExplicitEffort) {
+    return command;
+  }
+
+  const effortArg = `--config model_reasoning_effort=${quoteCliValue(trimmedEffort)}`;
+  const appServerMatch = command.match(/(^|\s)(app-server)(?=\s|$)/);
+  if (!appServerMatch || appServerMatch.index === undefined) {
+    return `${command} ${effortArg}`;
+  }
+
+  const insertionIndex = appServerMatch.index + appServerMatch[1].length;
+  return `${command.slice(0, insertionIndex)}${effortArg} ${command.slice(insertionIndex)}`.trim();
 }
 
 function quoteCliValue(value: string): string {

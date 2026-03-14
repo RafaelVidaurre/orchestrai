@@ -41,7 +41,8 @@ describe("project setup", () => {
       expect(workflow).toContain("max_concurrent_agents: 4");
       expect(workflow).toContain("- Merging");
       expect(workflow).toContain("- Rework");
-      expect(workflow).toContain("model_reasoning_effort=xhigh");
+      expect(workflow).toContain("command: codex --config shell_environment_policy.inherit=all app-server");
+      expect(workflow).not.toContain("reasoning_effort:");
       expect(workflow).toContain("shell_environment_policy.inherit=all");
       expect(workflow).toContain("thread_sandbox: danger-full-access");
       expect(workflow).toContain("turn_sandbox_policy:");
@@ -59,6 +60,8 @@ describe("project setup", () => {
       expect(record.maxConcurrentAgents).toBe(4);
       expect(record.hasLinearApiKey).toBe(true);
       expect(record.hasGithubToken).toBe(true);
+      expect(record.codexReasoningEffort).toBe("medium");
+      expect(record.usesGlobalCodexReasoningEffort).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -171,6 +174,7 @@ describe("project setup", () => {
       expect(record.usesGlobalLinearApiKey).toBe(true);
       expect(record.usesGlobalPollingIntervalMs).toBe(true);
       expect(record.usesGlobalMaxConcurrentAgents).toBe(true);
+      expect(record.usesGlobalCodexReasoningEffort).toBe(true);
       expect(record.hasLinearApiKey).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -203,6 +207,32 @@ describe("project setup", () => {
       expect(record.agentModel).toBe("claude-sonnet-4-6");
       expect(record.usesGlobalAgentProvider).toBe(false);
       expect(record.usesGlobalAgentModel).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("can scaffold a Codex project with an explicit reasoning-effort override", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "project-codex-reasoning-"));
+    try {
+      const created = await createProjectSetup(root, {
+        displayName: "Codex Project",
+        projectSlug: "codex-project",
+        linearApiKey: "lin_api_123",
+        githubRepository: "example/codex-project",
+        agentProvider: "codex",
+        codexReasoningEffort: "high",
+        useGlobalAgentProvider: false,
+        useGlobalCodexReasoningEffort: false
+      });
+
+      const workflow = await readFile(created.workflowPath, "utf8");
+      const record = await readProjectSetup(created.workflowPath, process.env, root);
+
+      expect(workflow).toContain("reasoning_effort: high");
+      expect(record.agentProvider).toBe("codex");
+      expect(record.codexReasoningEffort).toBe("high");
+      expect(record.usesGlobalCodexReasoningEffort).toBe(false);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

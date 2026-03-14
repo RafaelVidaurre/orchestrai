@@ -67,6 +67,32 @@ export interface ServerConfig {
 }
 
 export type AgentProvider = "codex" | "claude" | "grok";
+export const CODEX_REASONING_EFFORT_VALUES = ["low", "medium", "high", "xhigh"] as const;
+export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORT_VALUES)[number] | (string & {});
+
+export function normalizeCodexReasoningEffort(value: unknown): CodexReasoningEffort | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim();
+  switch (normalized) {
+    case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+      return normalized;
+    default:
+      return null;
+  }
+}
+
+export function coerceCodexReasoningEffort(
+  value: unknown,
+  fallback: CodexReasoningEffort
+): CodexReasoningEffort {
+  return normalizeCodexReasoningEffort(value) ?? fallback;
+}
 
 export interface RuntimeConfig {
   provider: AgentProvider;
@@ -78,6 +104,7 @@ export interface RuntimeConfig {
 
 export interface CodexConfig {
   command: string;
+  reasoningEffort: CodexReasoningEffort;
   approvalPolicy: unknown;
   threadSandbox: unknown;
   turnSandboxPolicy: unknown;
@@ -136,6 +163,9 @@ export interface AgentUsageSnapshot {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cost_usd?: number;
 }
 
 export interface AgentRuntimeEvent {
@@ -226,6 +256,7 @@ export interface RunningEntry {
   issue: Issue;
   identifier: string;
   agentProvider: AgentProvider;
+  agentModel: string;
   retryAttempt: number | null;
   startedAtMs: number;
   worker: {
@@ -245,6 +276,9 @@ export interface RunningEntry {
   lastReportedInputTokens: number;
   lastReportedOutputTokens: number;
   lastReportedTotalTokens: number;
+  lastReportedCacheReadInputTokens: number;
+  lastReportedCacheCreationInputTokens: number;
+  lastReportedCostUsd: number;
   turnCount: number;
   cancellingReason: WorkerCancelReason | null;
   phase: WorkerActivityEvent["phase"] | "queued";
@@ -346,6 +380,7 @@ export interface StatusRunningEntry {
   priority: number | null;
   attempt: number | null;
   agent_provider: AgentProvider;
+  agent_model: string;
   session_id: string | null;
   thread_id: string | null;
   turn_id: string | null;
@@ -415,6 +450,7 @@ export interface GlobalDefaults {
   maxConcurrentAgents: number;
   agentProvider: AgentProvider;
   agentModel: string;
+  codexReasoningEffort: CodexReasoningEffort;
 }
 
 export interface AgentModelDescriptor {
@@ -453,6 +489,7 @@ export interface GlobalConfigInput {
   githubToken?: string | null;
   agentProvider?: AgentProvider | null;
   agentModel?: string | null;
+  codexReasoningEffort?: CodexReasoningEffort | null;
   clearLinearApiKey?: boolean;
   clearXaiApiKey?: boolean;
   clearGithubToken?: boolean;
@@ -467,8 +504,10 @@ export interface ProjectSetupInput {
   githubToken?: string | null;
   agentProvider?: AgentProvider | null;
   agentModel?: string | null;
+  codexReasoningEffort?: CodexReasoningEffort | null;
   useGlobalAgentProvider?: boolean;
   useGlobalAgentModel?: boolean;
+  useGlobalCodexReasoningEffort?: boolean;
   pollingIntervalMs?: number | null;
   maxConcurrentAgents?: number | null;
   useGlobalLinearApiKey?: boolean;
@@ -488,6 +527,7 @@ export interface ProjectSetupResult {
   githubRepository: string | null;
   agentProvider: AgentProvider;
   agentModel: string;
+  codexReasoningEffort: CodexReasoningEffort;
   workflowDirectory: string;
   workflowPath: string;
   envFilePath: string;
@@ -498,6 +538,7 @@ export interface ProjectSetupResult {
   hasGithubToken: boolean;
   usesGlobalAgentProvider: boolean;
   usesGlobalAgentModel: boolean;
+  usesGlobalCodexReasoningEffort: boolean;
   usesGlobalLinearApiKey: boolean;
   usesGlobalXaiApiKey: boolean;
   usesGlobalGithubToken: boolean;
@@ -515,8 +556,10 @@ export interface ProjectUpdateInput {
   githubToken?: string | null;
   agentProvider?: AgentProvider | null;
   agentModel?: string | null;
+  codexReasoningEffort?: CodexReasoningEffort | null;
   useGlobalAgentProvider?: boolean;
   useGlobalAgentModel?: boolean;
+  useGlobalCodexReasoningEffort?: boolean;
   pollingIntervalMs?: number | null;
   maxConcurrentAgents?: number | null;
   useGlobalLinearApiKey?: boolean;
@@ -540,8 +583,10 @@ export interface ManagedProjectRecord {
   githubRepository: string | null;
   agentProvider: AgentProvider;
   agentModel: string;
+  codexReasoningEffort: CodexReasoningEffort;
   usesGlobalAgentProvider: boolean;
   usesGlobalAgentModel: boolean;
+  usesGlobalCodexReasoningEffort: boolean;
   workflowDirectory: string;
   workflowPath: string;
   envFilePath: string;
@@ -555,4 +600,57 @@ export interface ManagedProjectRecord {
   usesGlobalGithubToken: boolean;
   usesGlobalPollingIntervalMs: boolean;
   usesGlobalMaxConcurrentAgents: boolean;
+}
+
+export type UsageCostSource = "actual" | "official" | "estimated_alias" | "unknown";
+
+export interface UsageTotals {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+  cost_usd: number;
+  unpriced_total_tokens: number;
+}
+
+export interface ModelUsageMetrics extends UsageTotals {
+  provider: AgentProvider;
+  model: string;
+  cost_source: UsageCostSource;
+  first_seen_at: string;
+  last_seen_at: string;
+}
+
+export interface ProjectUsageBudgetSummary {
+  monthly_budget_usd: number | null;
+  current_month_cost_usd: number;
+  remaining_budget_usd: number | null;
+  status: "no_budget" | "within_budget" | "near_budget" | "over_budget" | "partial";
+}
+
+export interface ProjectUsageMetrics {
+  workflow_path: string;
+  project_slug: string;
+  display_name: string | null;
+  updated_at: string | null;
+  latest_provider: AgentProvider | null;
+  latest_model: string | null;
+  lifetime: UsageTotals;
+  current_month: UsageTotals;
+  models: ModelUsageMetrics[];
+  budget: ProjectUsageBudgetSummary;
+}
+
+export interface UsageMetricsSnapshot {
+  updated_at: string;
+  current_month: string;
+  projects: ProjectUsageMetrics[];
+  totals: {
+    lifetime: UsageTotals;
+    current_month: UsageTotals;
+  };
+}
+
+export interface ProjectUsageBudgetInput {
+  id: string;
+  monthlyBudgetUsd: number | null;
 }

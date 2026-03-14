@@ -92,6 +92,7 @@ function configFixture(root: string, hookOverrides?: { afterCreate?: string | nu
     },
     codex: {
       command: "codex app-server",
+      reasoningEffort: "medium",
       approvalPolicy: "never",
       threadSandbox: "workspace-write",
       turnSandboxPolicy: null

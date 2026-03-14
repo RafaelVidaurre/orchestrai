@@ -975,14 +975,19 @@ function extractGrokUsage(usage: unknown): AgentUsageSnapshot | undefined {
   const inputTokens = coerceNumber(record.input_tokens);
   const outputTokens = coerceNumber(record.output_tokens);
   const totalTokens = coerceNumber(record.total_tokens) || inputTokens + outputTokens;
-  if (inputTokens === 0 && outputTokens === 0 && totalTokens === 0) {
+  const promptTokenDetails = asRecord(record.prompt_tokens_details);
+  const cachedTokens = coerceNumber(promptTokenDetails?.cached_tokens);
+  const costUsdTicks = coerceNumber(record.cost_in_usd_ticks);
+  if (inputTokens === 0 && outputTokens === 0 && totalTokens === 0 && costUsdTicks === 0) {
     return undefined;
   }
 
   return {
     input_tokens: inputTokens,
     output_tokens: outputTokens,
-    total_tokens: totalTokens
+    total_tokens: totalTokens,
+    cache_read_input_tokens: cachedTokens || undefined,
+    cost_usd: costUsdTicks > 0 ? costUsdTicks / 1_000_000 : undefined
   };
 }
 

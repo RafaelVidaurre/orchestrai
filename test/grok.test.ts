@@ -41,7 +41,11 @@ describe("GrokApiSession", () => {
         usage: {
           input_tokens: 12,
           output_tokens: 4,
-          total_tokens: 16
+          total_tokens: 16,
+          prompt_tokens_details: {
+            cached_tokens: 2
+          },
+          cost_in_usd_ticks: 3500
         }
       },
       {
@@ -56,7 +60,11 @@ describe("GrokApiSession", () => {
         usage: {
           input_tokens: 20,
           output_tokens: 6,
-          total_tokens: 26
+          total_tokens: 26,
+          prompt_tokens_details: {
+            cached_tokens: 5
+          },
+          cost_in_usd_ticks: 8500
         }
       }
     ]);
@@ -76,7 +84,9 @@ describe("GrokApiSession", () => {
     expect(completion?.usage).toEqual({
       input_tokens: 20,
       output_tokens: 6,
-      total_tokens: 26
+      total_tokens: 26,
+      cache_read_input_tokens: 5,
+      cost_usd: 0.0085
     });
   });
 
@@ -448,6 +458,7 @@ function configFixture(workspaceRoot: string): ServiceConfig {
     },
     codex: {
       command: "codex app-server",
+      reasoningEffort: "medium",
       approvalPolicy: "never",
       threadSandbox: "danger-full-access",
       turnSandboxPolicy: null

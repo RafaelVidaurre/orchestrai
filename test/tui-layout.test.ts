@@ -28,6 +28,7 @@ describe("tui layout helpers", () => {
       priority: 2,
       attempt: 1,
       agent_provider: "codex",
+      agent_model: "gpt-5.2-codex",
       session_id: "session-1",
       thread_id: "thread-1",
       turn_id: "turn-1",

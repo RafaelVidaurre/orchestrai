@@ -1,6 +1,12 @@
 import path from "node:path";
 
-import type { AgentProvider, ServiceConfig, WorkflowDefinition } from "./domain";
+import {
+  coerceCodexReasoningEffort,
+  type AgentProvider,
+  type CodexReasoningEffort,
+  type ServiceConfig,
+  type WorkflowDefinition
+} from "./domain";
 import { ServiceError } from "./errors";
 import { DEFAULT_WORKSPACE_ROOT, expandPathLikeValue, normalizeState, resolveSecretValue } from "./utils";
 
@@ -8,10 +14,11 @@ const DEFAULT_LINEAR_ENDPOINT = "https://api.linear.app/graphql";
 const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"];
 const DEFAULT_TERMINAL_STATES = ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"];
 export const DEFAULT_CODEX_COMMAND =
-  "codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server";
+  "codex --config shell_environment_policy.inherit=all app-server";
 export const DEFAULT_CLAUDE_COMMAND = "claude";
 export const DEFAULT_GROK_MODEL = "grok-code-fast-1";
 export const DEFAULT_GROK_BASE_URL = "https://api.x.ai/v1";
+export const DEFAULT_CODEX_REASONING_EFFORT: CodexReasoningEffort = "medium";
 const DEFAULT_AGENT_PROVIDER: AgentProvider = "codex";
 const DEFAULT_AGENT_MODEL = "";
 const DEFAULT_APPROVAL_POLICY = {
@@ -139,6 +146,7 @@ export function buildServiceConfig(
     codex: {
       command:
         typeof codex.command === "string" && codex.command.trim().length > 0 ? codex.command.trim() : DEFAULT_CODEX_COMMAND,
+      reasoningEffort: resolveCodexReasoningEffort(codex.reasoning_effort, env),
       approvalPolicy: codex.approval_policy ?? DEFAULT_APPROVAL_POLICY,
       threadSandbox: codex.thread_sandbox ?? "danger-full-access",
       turnSandboxPolicy: codex.turn_sandbox_policy ?? null
@@ -362,4 +370,16 @@ function resolveRuntimeModel(params: {
   }
 
   return DEFAULT_AGENT_MODEL;
+}
+
+function resolveCodexReasoningEffort(value: unknown, env: NodeJS.ProcessEnv): CodexReasoningEffort {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return coerceCodexReasoningEffort(
+      resolveSecretValue(value, env, "ORCHESTRAI_DEFAULT_CODEX_REASONING_EFFORT").trim(),
+      DEFAULT_CODEX_REASONING_EFFORT
+    );
+  }
+
+  const fromEnv = resolveSecretValue("$ORCHESTRAI_DEFAULT_CODEX_REASONING_EFFORT", env, "ORCHESTRAI_DEFAULT_CODEX_REASONING_EFFORT").trim();
+  return coerceCodexReasoningEffort(fromEnv, DEFAULT_CODEX_REASONING_EFFORT);
 }

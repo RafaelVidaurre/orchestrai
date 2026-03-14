@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parse } from 'dotenv';
 import YAML from 'yaml';
 
+import { normalizeCodexReasoningEffort } from './domain';
 import type {
   DashboardSetupContext,
   ManagedProjectRecord,
@@ -317,7 +318,7 @@ Use this exact structure for the persistent workpad comment and keep it updated 
 const DEFAULT_AGENT_PROVIDER = 'codex';
 const DEFAULT_GROK_MODEL = 'grok-code-fast-1';
 const DEFAULT_CODEX_COMMAND =
-  'codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh app-server';
+  'codex --config shell_environment_policy.inherit=all app-server';
 const DEFAULT_CLAUDE_COMMAND = 'claude';
 const DEFAULT_GROK_BASE_URL = 'https://api.x.ai/v1';
 const DEFAULT_POLL_INTERVAL_MS = 30000;
@@ -437,6 +438,9 @@ export async function readProjectSetup(
           : '';
   const usesGlobalAgentModel = !configuredModel.length;
   const effectiveUsesGlobalAgentModel = usesGlobalAgentModel && !(agentProvider === 'grok' && !globalConfig.defaults.agentModel);
+  const configuredCodexReasoningEffort =
+    normalizeCodexReasoningEffort(codexConfig.reasoning_effort);
+  const usesGlobalCodexReasoningEffort = configuredCodexReasoningEffort === null;
 
   return {
     id: absoluteWorkflowPath,
@@ -468,8 +472,12 @@ export async function readProjectSetup(
     agentModel: effectiveUsesGlobalAgentModel
       ? globalConfig.defaults.agentModel
       : configuredModel || (agentProvider === 'grok' ? DEFAULT_GROK_MODEL : ''),
+    codexReasoningEffort: usesGlobalCodexReasoningEffort
+      ? globalConfig.defaults.codexReasoningEffort
+      : configuredCodexReasoningEffort,
     usesGlobalAgentProvider,
     usesGlobalAgentModel: effectiveUsesGlobalAgentModel,
+    usesGlobalCodexReasoningEffort,
     usesGlobalLinearApiKey,
     usesGlobalXaiApiKey,
     usesGlobalGithubToken,
@@ -499,6 +507,7 @@ export async function updateProjectSetup(
   setNestedString(root, ['tracker', 'project_slug'], '$PROJECT_SLUG');
   setNestedString(root, ['workspace', 'root'], '.orchestrai/workspaces');
   setNestedString(root, ['codex', 'command'], DEFAULT_CODEX_COMMAND);
+  setNestedString(root, ['codex', 'reasoning_effort'], globalConfig.defaults.codexReasoningEffort);
   setNestedString(root, ['codex', 'approval_policy'], 'never');
   setNestedString(root, ['codex', 'thread_sandbox'], 'danger-full-access');
   setNestedValue(root, ['codex', 'turn_sandbox_policy'], {
@@ -551,6 +560,11 @@ export async function updateProjectSetup(
     setNestedString(root, ['runtime', 'model'], normalized.agentModel);
     deleteNestedValue(root, ['codex', 'model']);
     deleteNestedValue(root, ['claude', 'model']);
+  }
+  if (normalized.useGlobalCodexReasoningEffort) {
+    deleteNestedValue(root, ['codex', 'reasoning_effort']);
+  } else {
+    setNestedString(root, ['codex', 'reasoning_effort'], normalized.codexReasoningEffort);
   }
 
   await writeWorkflowDefinition(absoluteWorkflowPath, {
@@ -636,6 +650,7 @@ export function createDashboardSetupContext(projectsRoot: string): DashboardSetu
         maxConcurrentAgents: DEFAULT_MAX_CONCURRENT_AGENTS,
         agentProvider: DEFAULT_AGENT_PROVIDER,
         agentModel: '',
+        codexReasoningEffort: 'medium',
       },
       hasLinearApiKey: false,
       hasXaiApiKey: false,
@@ -656,8 +671,10 @@ function renderWorkflowMarkdown(input: {
   useGlobalMaxConcurrentAgents: boolean;
   agentProvider: string;
   agentModel: string | null;
+  codexReasoningEffort: string;
   useGlobalAgentProvider: boolean;
   useGlobalAgentModel: boolean;
+  useGlobalCodexReasoningEffort: boolean;
 }): string {
   const frontMatter: Record<string, unknown> = {
     tracker: {
@@ -688,6 +705,7 @@ function renderWorkflowMarkdown(input: {
     runtime: {},
     codex: {
       command: DEFAULT_CODEX_COMMAND,
+      reasoning_effort: input.useGlobalCodexReasoningEffort ? undefined : input.codexReasoningEffort,
       approval_policy: 'never',
       thread_sandbox: 'danger-full-access',
       turn_sandbox_policy: {
@@ -785,10 +803,24 @@ function normalizeProjectSetupInput(
 ) {
   const requestedAgentProvider = normalizeAgentProvider(input.agentProvider);
   const requestedAgentModel = normalizeOptionalValue(input.agentModel);
+  const requestedCodexReasoningEffort = normalizeCodexReasoningEffort(input.codexReasoningEffort);
+  if (
+    typeof input.codexReasoningEffort === 'string' &&
+    input.codexReasoningEffort.trim().length > 0 &&
+    requestedCodexReasoningEffort === null
+  ) {
+    throw new ServiceError(
+      'invalid_project_setup',
+      'codexReasoningEffort must be low, medium, high, or xhigh',
+    );
+  }
   const useGlobalAgentProvider =
     input.useGlobalAgentProvider === true || (input.useGlobalAgentProvider === undefined && !requestedAgentProvider);
   const requestedUseGlobalAgentModel =
     input.useGlobalAgentModel === true || (input.useGlobalAgentModel === undefined && !requestedAgentModel);
+  const useGlobalCodexReasoningEffort =
+    input.useGlobalCodexReasoningEffort !== false &&
+    (input.useGlobalCodexReasoningEffort === true || requestedCodexReasoningEffort === null);
   const useGlobalLinearApiKey =
     input.useGlobalLinearApiKey === true ||
     (!normalizeOptionalValue(input.linearApiKey) && globalConfig.hasLinearApiKey);
@@ -839,8 +871,12 @@ function normalizeProjectSetupInput(
       : coercePositiveInteger(input.maxConcurrentAgents, globalConfig.defaults.maxConcurrentAgents),
     agentProvider: resolvedAgentProvider,
     agentModel: useGlobalAgentModel ? fallbackAgentModel : requestedAgentModel ?? (resolvedAgentProvider === 'grok' ? DEFAULT_GROK_MODEL : null),
+    codexReasoningEffort: useGlobalCodexReasoningEffort
+      ? globalConfig.defaults.codexReasoningEffort
+      : requestedCodexReasoningEffort ?? globalConfig.defaults.codexReasoningEffort,
     useGlobalAgentProvider,
     useGlobalAgentModel,
+    useGlobalCodexReasoningEffort,
     useGlobalLinearApiKey,
     useGlobalXaiApiKey,
     useGlobalGithubToken,
@@ -855,6 +891,7 @@ function normalizeProjectUpdateInput(
 ) {
   const useGlobalAgentProvider = input.useGlobalAgentProvider === true;
   const requestedUseGlobalAgentModel = input.useGlobalAgentModel === true;
+  const useGlobalCodexReasoningEffort = input.useGlobalCodexReasoningEffort === true;
   const useGlobalLinearApiKey = input.useGlobalLinearApiKey === true;
   const useGlobalXaiApiKey = input.useGlobalXaiApiKey === true;
   const useGlobalGithubToken = input.useGlobalGithubToken === true;
@@ -864,6 +901,18 @@ function normalizeProjectUpdateInput(
     useGlobalAgentProvider ? globalConfig.defaults.agentProvider : normalizeAgentProvider(input.agentProvider) ?? DEFAULT_AGENT_PROVIDER;
   const useGlobalAgentModel = requestedUseGlobalAgentModel && !(resolvedAgentProvider === 'grok' && !globalConfig.defaults.agentModel);
   const xaiApiKey = normalizeOptionalValue(input.xaiApiKey);
+  const requestedCodexReasoningEffort = normalizeCodexReasoningEffort(input.codexReasoningEffort);
+
+  if (
+    typeof input.codexReasoningEffort === 'string' &&
+    input.codexReasoningEffort.trim().length > 0 &&
+    requestedCodexReasoningEffort === null
+  ) {
+    throw new ServiceError(
+      'invalid_project_setup',
+      'codexReasoningEffort must be low, medium, high, or xhigh',
+    );
+  }
 
   if (resolvedAgentProvider === 'grok' && !useGlobalXaiApiKey && !xaiApiKey) {
     throw new ServiceError(
@@ -888,6 +937,9 @@ function normalizeProjectUpdateInput(
     githubToken: normalizeOptionalValue(input.githubToken),
     agentProvider: resolvedAgentProvider,
     agentModel: useGlobalAgentModel ? null : normalizeOptionalValue(input.agentModel) ?? (resolvedAgentProvider === 'grok' ? DEFAULT_GROK_MODEL : null),
+    codexReasoningEffort: useGlobalCodexReasoningEffort
+      ? globalConfig.defaults.codexReasoningEffort
+      : requestedCodexReasoningEffort ?? globalConfig.defaults.codexReasoningEffort,
     pollingIntervalMs: useGlobalPollingIntervalMs
       ? null
       : coercePositiveInteger(input.pollingIntervalMs, globalConfig.defaults.pollingIntervalMs),
@@ -899,6 +951,7 @@ function normalizeProjectUpdateInput(
     useGlobalGithubToken,
     useGlobalAgentProvider,
     useGlobalAgentModel,
+    useGlobalCodexReasoningEffort,
     useGlobalPollingIntervalMs,
     useGlobalMaxConcurrentAgents,
   };
