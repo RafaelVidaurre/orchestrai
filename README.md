@@ -18,6 +18,7 @@ This file is for humans:
 - generated files and runtime state
 
 Agent-facing guidance lives in [AGENTS.md](/Users/rafaelvidaurre/Code/Personal/agentic-development/orchestrai/AGENTS.md). Maintainer and architecture notes live in [docs/MAINTAINERS.md](/Users/rafaelvidaurre/Code/Personal/agentic-development/orchestrai/docs/MAINTAINERS.md).
+Release history lives in [CHANGELOG.md](/Users/rafaelvidaurre/Code/Personal/agentic-development/orchestrai/CHANGELOG.md).
 
 ## Requirements
 

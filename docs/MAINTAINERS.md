@@ -155,6 +155,38 @@ Current gaps:
 - Dashboard React client and TUI remain effectively untested in automation.
 - Provider session implementations (`codex.ts`, `claude.ts`) still have very low coverage because they wrap real external runtimes.
 
+## Conventional Commits And Releases
+
+OrchestrAI now uses conventional commits plus `standard-version`.
+
+Commit workflow:
+
+```bash
+yarn install
+yarn commit
+```
+
+`yarn install` runs the Husky `prepare` step and installs the `commit-msg` hook. `yarn commit` then launches Commitizen using the conventional-changelog prompt adapter. Non-compliant commit messages are rejected by `commitlint`, even if someone uses plain `git commit`.
+
+Release workflow:
+
+```bash
+yarn release:dry-run
+yarn release:first
+yarn release
+```
+
+Run release commands from a clean working tree. `standard-version` will refuse to cut a release if there are uncommitted changes.
+
+- `yarn release:first`
+  Use once to establish the initial `0.1.0` release tag and seed automated changelog management.
+- `yarn release`
+  Bumps the version according to conventional commits, updates `CHANGELOG.md`, and creates the release commit/tag.
+- `yarn release:dry-run`
+  Shows the computed next release without changing files.
+
+The checked-in `CHANGELOG.md` starts at `0.1.0` and is the public release history going forward.
+
 ## Release And Packaging Notes
 
 - The npm CLI entrypoint is `dist/src/cli.js`.
