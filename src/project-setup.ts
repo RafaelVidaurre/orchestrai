@@ -15,6 +15,7 @@ import type {
 } from './domain';
 import { ServiceError } from './errors';
 import { loadWorkflowEnv } from './env';
+import { readFatalProjectError } from './fatal-runtime-errors';
 import { readGlobalConfig } from './global-config';
 import { parseWorkflowFile } from './workflow';
 
@@ -382,6 +383,7 @@ export async function readProjectSetup(
   const localEnv = await readProjectSecrets(envFilePath);
   const resolvedProjectsRoot = resolveProjectsRoot(absoluteWorkflowPath, projectsRoot);
   const globalConfig = await readGlobalConfig(resolvedProjectsRoot, baseEnv);
+  const fatalError = await readFatalProjectError(absoluteWorkflowPath);
   const effectiveEnv = await loadWorkflowEnv(
     path.dirname(absoluteWorkflowPath),
     baseEnv,
@@ -436,6 +438,7 @@ export async function readProjectSetup(
     displayName: typeof project.name === 'string' && project.name.trim().length > 0 ? project.name.trim() : null,
     enabled: coerceBoolean(project.enabled, true),
     runtimeRunning: false,
+    fatalError,
     projectSlug,
     githubRepository,
     workflowDirectory: path.dirname(absoluteWorkflowPath),

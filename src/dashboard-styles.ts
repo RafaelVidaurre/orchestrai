@@ -247,6 +247,11 @@ export const dashboardStyles = `
     color: var(--warning);
   }
 
+  .project-avatar.fatal {
+    background: color-mix(in srgb, var(--destructive) 18%, transparent 82%);
+    color: var(--destructive);
+  }
+
   .project-avatar.all {
     background: color-mix(in srgb, var(--accent) 16%, transparent 84%);
     color: var(--accent);
@@ -321,6 +326,11 @@ export const dashboardStyles = `
   .status-pill.stopped {
     background: color-mix(in srgb, var(--warning) 18%, transparent 82%);
     color: var(--warning);
+  }
+
+  .status-pill.fatal {
+    background: color-mix(in srgb, var(--destructive) 18%, transparent 82%);
+    color: var(--destructive);
   }
 
   .sidebar-footer {
@@ -955,6 +965,72 @@ export const dashboardStyles = `
 
   .detail-value.good {
     color: var(--success);
+  }
+
+  .detail-value.bad {
+    color: var(--destructive);
+  }
+
+  .fatal-panel {
+    border-radius: 18px;
+    border: 1px solid color-mix(in srgb, var(--destructive) 24%, var(--border) 76%);
+    background: color-mix(in srgb, var(--destructive) 7%, var(--card) 93%);
+    padding: 18px;
+    margin-bottom: 16px;
+  }
+
+  .fatal-panel-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .fatal-eyebrow,
+  .fatal-label {
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+
+  .fatal-title {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-top: 4px;
+    color: var(--destructive);
+  }
+
+  .fatal-meta,
+  .fatal-message {
+    color: var(--muted-foreground);
+  }
+
+  .fatal-message {
+    margin: 12px 0 0;
+  }
+
+  .fatal-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    margin-top: 14px;
+  }
+
+  .fatal-value {
+    margin-top: 5px;
+    word-break: break-word;
+  }
+
+  .fatal-details {
+    margin: 14px 0 0;
+    padding: 12px;
+    border-radius: 14px;
+    background: color-mix(in srgb, var(--muted) 78%, transparent 22%);
+    border: 1px solid var(--border);
+    overflow: auto;
+    font-size: 0.82rem;
+    line-height: 1.45;
   }
 
   .detail-link.subtle {

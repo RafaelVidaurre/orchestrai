@@ -120,6 +120,8 @@ export class IssueWorker {
         return {
           kind: "timed_out",
           error: error.message,
+          errorCode: error.code,
+          errorDetails: error.details ?? null,
           issue: currentIssue,
           turnCount
         };
@@ -129,14 +131,19 @@ export class IssueWorker {
         return {
           kind: "failed",
           error: error.message,
+          errorCode: error.code,
+          errorDetails: error.details ?? null,
           issue: currentIssue,
           turnCount
         };
       }
 
+      const serviceError = error instanceof ServiceError ? error : null;
       return {
         kind: "failed",
         error: errorMessage(error),
+        errorCode: serviceError?.code ?? null,
+        errorDetails: serviceError?.details ?? null,
         issue: currentIssue,
         turnCount
       };
@@ -187,6 +194,8 @@ function cancelledOutcome(reason: WorkerCancelReason, issue: Issue, turnCount: n
       return {
         kind: "stalled",
         error: "Worker stalled and was terminated",
+        errorCode: "worker_stalled",
+        errorDetails: null,
         issue,
         turnCount
       };
@@ -194,6 +203,8 @@ function cancelledOutcome(reason: WorkerCancelReason, issue: Issue, turnCount: n
       return {
         kind: "canceled_non_active",
         error: "Issue became non-active during reconciliation",
+        errorCode: "worker_canceled_non_active",
+        errorDetails: null,
         issue,
         turnCount
       };
@@ -201,6 +212,8 @@ function cancelledOutcome(reason: WorkerCancelReason, issue: Issue, turnCount: n
       return {
         kind: "canceled_terminal",
         error: "Issue became terminal during reconciliation",
+        errorCode: "worker_canceled_terminal",
+        errorDetails: null,
         issue,
         turnCount
       };
@@ -208,6 +221,8 @@ function cancelledOutcome(reason: WorkerCancelReason, issue: Issue, turnCount: n
       return {
         kind: "service_stopping",
         error: "Service is stopping",
+        errorCode: "service_stopping",
+        errorDetails: null,
         issue,
         turnCount
       };

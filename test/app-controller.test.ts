@@ -1,11 +1,12 @@
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
 import { AppController } from "../src/app-controller";
+import { fatalProjectErrorLogPath } from "../src/fatal-runtime-errors";
 import { Logger } from "../src/logger";
 import type { WorkflowContext } from "../src/workflow";
 
@@ -53,6 +54,58 @@ describe("app controller dashboard startup", () => {
           resolve();
         });
       });
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pauses a project and writes a fatal log when startup hits a fatal Grok error", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "app-controller-fatal-"));
+    const workflowDir = path.join(root, "project-one");
+    const workflowPath = path.join(workflowDir, "WORKFLOW.md");
+    await mkdir(workflowDir, { recursive: true });
+    await writeFile(
+      workflowPath,
+      `---\nproject:\n  enabled: true\ntracker:\n  kind: linear\n  api_key: test-linear-key\n  project_slug: demo\nworkspace:\n  root: .orchestrai/workspaces\nruntime:\n  provider: grok\nserver:\n  port: -1\n---\nnoop\n`,
+      "utf8"
+    );
+
+    const context: WorkflowContext = {
+      targetPath: root,
+      workflowPaths: [workflowPath],
+      projectsRoot: root
+    };
+
+    const controller = new AppController(context, new Logger({}, { writeToStreams: false }), process.env);
+
+    try {
+      await controller.startRuntime();
+
+      const projects = await controller.listProjects();
+      expect(projects).toHaveLength(1);
+      expect(projects[0]).toMatchObject({
+        enabled: false,
+        runtimeRunning: false,
+        fatalError: {
+          code: "missing_grok_api_key",
+          stage: "startup"
+        }
+      });
+
+      const snapshot = controller.snapshot();
+      expect(snapshot.project_states[0]).toMatchObject({
+        workflow_path: workflowPath,
+        enabled: false,
+        runtime_running: false,
+        fatal_error: {
+          code: "missing_grok_api_key"
+        }
+      });
+
+      const logContent = await readFile(fatalProjectErrorLogPath(workflowPath), "utf8");
+      expect(logContent).toContain("missing_grok_api_key");
+      expect(logContent).toContain(workflowPath);
+    } finally {
+      await controller.stop().catch(() => undefined);
       await rm(root, { recursive: true, force: true });
     }
   });

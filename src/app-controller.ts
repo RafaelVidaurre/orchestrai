@@ -16,10 +16,12 @@ import { Logger } from "./logger";
 import {
   createProjectSetup,
   listProjectSetups,
+  readProjectSetup,
   removeProjectSetup,
   setProjectEnabled,
   updateProjectSetup
 } from "./project-setup";
+import { clearFatalProjectError, recordFatalProjectError, type FatalRuntimeErrorInput } from "./fatal-runtime-errors";
 import { readGlobalConfig, updateGlobalConfig } from "./global-config";
 import { RuntimeManager } from "./runtime";
 import { StatusServer } from "./status-server";
@@ -55,7 +57,10 @@ export class AppController implements StatusSource {
       [...this.knownWorkflowPaths],
       path.resolve(workflowContext.projectsRoot),
       logger.child({ component: "runtime-manager" }),
-      env
+      env,
+      {
+        onFatalError: async (input) => this.handleFatalWorkflowError(input)
+      }
     );
     this.setupContextValue = {
       projectsRoot: path.resolve(workflowContext.projectsRoot),
@@ -214,10 +219,7 @@ export class AppController implements StatusSource {
     this.knownWorkflowPaths.add(workflowPath);
     await this.runtime.addWorkflow(workflowPath);
     this.publishState();
-    return {
-      ...result,
-      runtimeRunning: this.runtime.isWorkflowRunning(workflowPath)
-    };
+    return this.readManagedProject(workflowPath);
   }
 
   async updateProject(input: ProjectUpdateInput): Promise<ManagedProjectRecord> {
@@ -231,10 +233,7 @@ export class AppController implements StatusSource {
     await this.runtime.removeWorkflow(previousPath);
     await this.runtime.reloadWorkflow(nextPath);
     this.publishState();
-    return {
-      ...updated,
-      runtimeRunning: this.runtime.isWorkflowRunning(nextPath)
-    };
+    return this.readManagedProject(nextPath);
   }
 
   async removeProject(id: string): Promise<void> {
@@ -247,7 +246,8 @@ export class AppController implements StatusSource {
 
   async startProject(input: ProjectRuntimeControlInput): Promise<ManagedProjectRecord> {
     const workflowPath = path.resolve(input.id);
-    const updated = await setProjectEnabled(workflowPath, {
+    await clearFatalProjectError(workflowPath);
+    await setProjectEnabled(workflowPath, {
       ...input,
       enabled: true
     }, this.env, this.workflowContext.projectsRoot);
@@ -255,24 +255,18 @@ export class AppController implements StatusSource {
     await this.runtime.enableWorkflow(workflowPath);
     this.runtimeRunning = true;
     this.publishState();
-    return {
-      ...updated,
-      runtimeRunning: this.runtime.isWorkflowRunning(workflowPath)
-    };
+    return this.readManagedProject(workflowPath);
   }
 
   async stopProject(input: ProjectRuntimeControlInput): Promise<ManagedProjectRecord> {
     const workflowPath = path.resolve(input.id);
-    const updated = await setProjectEnabled(workflowPath, {
+    await setProjectEnabled(workflowPath, {
       ...input,
       enabled: false
     }, this.env, this.workflowContext.projectsRoot);
     await this.runtime.disableWorkflow(workflowPath);
     this.publishState();
-    return {
-      ...updated,
-      runtimeRunning: this.runtime.isWorkflowRunning(workflowPath)
-    };
+    return this.readManagedProject(workflowPath);
   }
 
   private resolveDashboardAddress(): [number, string] {
@@ -305,6 +299,28 @@ export class AppController implements StatusSource {
     for (const subscriber of this.subscribers) {
       subscriber(state);
     }
+  }
+
+  private async readManagedProject(workflowPath: string): Promise<ManagedProjectRecord> {
+    const project = await readProjectSetup(workflowPath, this.env, this.workflowContext.projectsRoot);
+    return {
+      ...project,
+      runtimeRunning: this.runtime.isWorkflowRunning(workflowPath)
+    };
+  }
+
+  private async handleFatalWorkflowError(input: FatalRuntimeErrorInput) {
+    const record = await recordFatalProjectError(input);
+    await setProjectEnabled(
+      input.workflowPath,
+      {
+        id: input.workflowPath,
+        enabled: false
+      },
+      this.env,
+      this.workflowContext.projectsRoot
+    );
+    return record;
   }
 }
 

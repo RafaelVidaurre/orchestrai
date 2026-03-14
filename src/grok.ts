@@ -268,7 +268,11 @@ export class GrokApiSession {
       throw new ServiceError(
         response.status === 401 ? "grok_auth_error" : "grok_api_status",
         detail ? `Grok API returned HTTP ${response.status}: ${detail}` : `Grok API returned HTTP ${response.status}`,
-        rateLimits ?? undefined
+        {
+          status: response.status,
+          detail: detail ?? null,
+          rate_limits: rateLimits
+        }
       );
     }
 

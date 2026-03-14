@@ -43,13 +43,19 @@ codex:
 server:
   port: "-1"
 project:
-  enabled: true
+  enabled: false
   name: Stori
 claude:
   command: claude
   permission_mode: bypassPermissions
 runtime:
-  provider: claude
+  provider: grok
+  model: grok-4-1-fast-reasoning
+grok:
+  api_key: $XAI_API_KEY
+  base_url: https://api.x.ai/v1
+  max_tool_rounds: 24
+  command_timeout_ms: 120000
 ---
 You are working on a Linear ticket `{{ issue.identifier }}`
 

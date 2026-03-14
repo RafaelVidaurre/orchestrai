@@ -204,6 +204,8 @@ export interface WorkerSuccessOutcome {
 export interface WorkerFailureOutcome {
   kind: "failed" | "timed_out" | "stalled" | "canceled_non_active" | "canceled_terminal" | "service_stopping";
   error: string;
+  errorCode: string | null;
+  errorDetails: Record<string, unknown> | null;
   issue: Issue;
   turnCount: number;
 }
@@ -293,6 +295,20 @@ export interface OperatorEvent {
   fields?: Record<string, unknown>;
 }
 
+export interface FatalProjectError {
+  timestamp: string;
+  workflow_path: string;
+  provider: AgentProvider | null;
+  stage: "startup" | "dispatch" | "worker" | "retry" | "reconcile";
+  code: string;
+  message: string;
+  details: Record<string, unknown> | null;
+  issue_id: string | null;
+  issue_identifier: string | null;
+  issue_title: string | null;
+  log_path: string;
+}
+
 export interface StatusProjectSummary {
   workflow_path: string;
   display_name: string | null;
@@ -307,6 +323,14 @@ export interface StatusProjectSummary {
   linear_rate_limits: LinearRateLimits | null;
   agent_totals: RuntimeTotals;
   agent_rate_limits: unknown;
+  updated_at: string;
+}
+
+export interface StatusProjectState {
+  workflow_path: string;
+  enabled: boolean;
+  runtime_running: boolean;
+  fatal_error: FatalProjectError | null;
   updated_at: string;
 }
 
@@ -362,6 +386,7 @@ export interface StatusSnapshot {
   completed_count: number;
   claimed_count: number;
   projects: StatusProjectSummary[];
+  project_states: StatusProjectState[];
   running: StatusRunningEntry[];
   retries: StatusRetryEntry[];
   agent_totals: RuntimeTotals;
@@ -439,8 +464,9 @@ export interface ProjectSetupResult {
   displayName: string | null;
   enabled: boolean;
   runtimeRunning: boolean;
+  fatalError: FatalProjectError | null;
   projectSlug: string;
-  githubRepository: string;
+  githubRepository: string | null;
   agentProvider: AgentProvider;
   agentModel: string;
   workflowDirectory: string;
@@ -490,6 +516,7 @@ export interface ManagedProjectRecord {
   displayName: string | null;
   enabled: boolean;
   runtimeRunning: boolean;
+  fatalError: FatalProjectError | null;
   projectSlug: string;
   githubRepository: string | null;
   agentProvider: AgentProvider;

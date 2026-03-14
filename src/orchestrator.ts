@@ -31,6 +31,8 @@ import {
 } from "./utils";
 import { WorkflowManager } from "./workflow";
 import { WorkspaceManager } from "./workspace";
+import { classifyFatalRuntimeError, type FatalRuntimeErrorInput } from "./fatal-runtime-errors";
+import { ServiceError } from "./errors";
 import {
   classifyHumanizedCodexMessage,
   isNarrativeTranscriptKind,
@@ -67,15 +69,22 @@ export class Orchestrator {
   private currentWorkflow: LoadedWorkflow | null = null;
   private readonly subscribers = new Set<(snapshot: StatusSnapshot) => void>();
   private readonly recentEvents: OperatorEvent[] = [];
+  private readonly workflowPath: string;
+  private readonly onFatalError: ((input: FatalRuntimeErrorInput) => Promise<boolean | void> | boolean | void) | null;
 
   constructor(
     workflowPath: string,
     logger = new Logger(),
-    env: NodeJS.ProcessEnv = process.env
+    env: NodeJS.ProcessEnv = process.env,
+    options: {
+      onFatalError?: (input: FatalRuntimeErrorInput) => Promise<boolean | void> | boolean | void;
+    } = {}
   ) {
+    this.workflowPath = path.resolve(workflowPath);
     this.logger = logger.child({ component: "orchestrator" });
-    this.workflowManager = new WorkflowManager(path.resolve(workflowPath), this.logger.child({ component: "workflow" }), env);
+    this.workflowManager = new WorkflowManager(this.workflowPath, this.logger.child({ component: "workflow" }), env);
     this.workspaceManager = new WorkspaceManager(this.logger.child({ component: "workspace" }));
+    this.onFatalError = options.onFatalError ?? null;
   }
 
   async start(): Promise<void> {
@@ -163,6 +172,15 @@ export class Orchestrator {
           updated_at: new Date().toISOString()
         }
       ],
+      project_states: [
+        {
+          workflow_path: workflow.config.workflowPath,
+          enabled: workflow.config.project.enabled,
+          runtime_running: true,
+          fatal_error: null,
+          updated_at: new Date().toISOString()
+        }
+      ],
       running: [...this.running.values()].map((entry) => ({
         workflow_path: workflow.config.workflowPath,
         project_slug: project.slug,
@@ -240,6 +258,9 @@ export class Orchestrator {
       validateDispatchConfig(workflow.config);
     } catch (error) {
       this.logger.errorWithCause("dispatch preflight validation failed", error);
+      if (await this.reportFatalError("dispatch", error)) {
+        return;
+      }
       this.scheduleTick(workflow.config.polling.intervalMs);
       return;
     }
@@ -265,6 +286,9 @@ export class Orchestrator {
       }
     } catch (error) {
       this.logger.errorWithCause("tracker candidate issue fetch failed", error);
+      if (await this.reportFatalError("dispatch", error)) {
+        return;
+      }
     }
 
     this.publishSnapshot();
@@ -372,6 +396,7 @@ export class Orchestrator {
       issue_identifier: entry.identifier,
       outcome: outcome.kind,
       error: "error" in outcome ? outcome.error : null,
+      error_code: "errorCode" in outcome ? outcome.errorCode : null,
       turn_count: outcome.turnCount
     });
 
@@ -412,6 +437,22 @@ export class Orchestrator {
 
     if (outcome.kind === "canceled_terminal") {
       await this.workspaceManager.removeWorkspace(workflow.config, outcome.issue.identifier, workflow.env);
+      this.releaseClaim(issueId);
+      this.publishSnapshot();
+      return;
+    }
+
+    if (
+      await this.reportFatalError(
+        "worker",
+        toOutcomeError(outcome),
+        {
+          id: outcome.issue.id,
+          identifier: outcome.issue.identifier,
+          title: outcome.issue.title
+        }
+      )
+    ) {
       this.releaseClaim(issueId);
       this.publishSnapshot();
       return;
@@ -475,6 +516,15 @@ export class Orchestrator {
         workflow.config
       );
     } catch (error) {
+      if (
+        await this.reportFatalError("retry", error, {
+          id: issueId,
+          identifier: retryEntry.identifier,
+          title: retryEntry.title
+        })
+      ) {
+        return;
+      }
       this.scheduleRetry(
         issueId,
         retryEntry.attempt + 1,
@@ -530,6 +580,7 @@ export class Orchestrator {
       }
     } catch (error) {
       this.logger.errorWithCause("running issue reconciliation failed; leaving workers active", error);
+      await this.reportFatalError("reconcile", error);
     }
   }
 
@@ -948,10 +999,56 @@ export class Orchestrator {
         break;
     }
   }
+
+  private async reportFatalError(
+    stage: FatalRuntimeErrorInput["stage"],
+    error: unknown,
+    issue?: FatalRuntimeErrorInput["issue"]
+  ): Promise<boolean> {
+    const provider = this.currentWorkflow?.config.runtime.provider ?? null;
+    const classified = classifyFatalRuntimeError({
+      provider,
+      stage,
+      error,
+      issue
+    });
+    if (!classified) {
+      return false;
+    }
+
+    this.recordEvent("error", "fatal runtime error detected; pausing project", {
+      workflow_path: this.currentWorkflow?.config.workflowPath ?? this.workflowPath,
+      fatal_code: classified.code,
+      fatal_stage: classified.stage,
+      fatal_message: classified.message,
+      issue_id: classified.issue_id,
+      issue_identifier: classified.issue_identifier
+    });
+    if (!this.onFatalError) {
+      return true;
+    }
+
+    await this.onFatalError({
+      workflowPath: this.currentWorkflow?.config.workflowPath ?? this.workflowPath,
+      provider,
+      stage,
+      error,
+      issue
+    });
+    return true;
+  }
 }
 
 function nextAttemptFrom(entry: RunningEntry): number {
   return entry.retryAttempt === null ? 1 : entry.retryAttempt + 1;
+}
+
+function toOutcomeError(
+  outcome: Extract<WorkerOutcome, { kind: "failed" | "timed_out" | "stalled" | "canceled_non_active" | "canceled_terminal" | "service_stopping" }>
+): Error {
+  return outcome.errorCode
+    ? new ServiceError(outcome.errorCode, outcome.error, outcome.errorDetails ?? undefined)
+    : new Error(outcome.error);
 }
 
 function shouldRecordAgentEvent(event: AgentRuntimeEvent): boolean {

@@ -1,9 +1,16 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { LoadedWorkflow, StatusSnapshot, StatusSource } from "./domain";
+import type { FatalProjectError, LoadedWorkflow, StatusProjectState, StatusSnapshot, StatusSource } from "./domain";
 import { buildServiceConfig } from "./config";
 import { loadWorkflowEnv } from "./env";
+import {
+  classifyFatalRuntimeError,
+  clearFatalProjectError,
+  readFatalProjectError,
+  recordFatalProjectError,
+  type FatalRuntimeErrorInput
+} from "./fatal-runtime-errors";
 import { Logger } from "./logger";
 import { Orchestrator } from "./orchestrator";
 import { parseWorkflowFile } from "./workflow";
@@ -15,10 +22,24 @@ interface ManagedRuntime {
   unsubscribe: (() => void) | null;
 }
 
+interface WorkflowRuntimeState {
+  workflowPath: string;
+  enabled: boolean;
+  runtimeRunning: boolean;
+  fatalError: FatalProjectError | null;
+  updatedAt: string;
+}
+
+interface RuntimeManagerOptions {
+  onFatalError?: (input: FatalRuntimeErrorInput) => Promise<FatalProjectError>;
+}
+
 export class RuntimeManager implements StatusSource {
   private readonly runtimes = new Map<string, ManagedRuntime>();
   private readonly workflowPaths = new Set<string>();
   private readonly disabledWorkflowPaths = new Set<string>();
+  private readonly projectStates = new Map<string, WorkflowRuntimeState>();
+  private readonly fatalWorkflowPaths = new Set<string>();
   private readonly subscribers = new Set<(snapshot: StatusSnapshot) => void>();
   private started = false;
 
@@ -26,10 +47,12 @@ export class RuntimeManager implements StatusSource {
     workflowPaths: string[],
     private readonly projectsRoot: string | null,
     private readonly logger: Logger = new Logger(),
-    private readonly baseEnv: NodeJS.ProcessEnv = process.env
+    private readonly baseEnv: NodeJS.ProcessEnv = process.env,
+    private readonly options: RuntimeManagerOptions = {}
   ) {
     workflowPaths.map((workflowPath) => path.resolve(workflowPath)).forEach((workflowPath) => {
       this.workflowPaths.add(workflowPath);
+      this.ensureWorkflowState(workflowPath);
     });
   }
 
@@ -41,14 +64,9 @@ export class RuntimeManager implements StatusSource {
     this.started = true;
 
     for (const workflowPath of this.workflowPaths) {
-      try {
-        await this.syncWorkflowEnabledState(workflowPath);
-        if (!this.disabledWorkflowPaths.has(workflowPath)) {
-          await this.startWorkflow(workflowPath);
-        }
-      } catch (error) {
-        await this.stop().catch(() => undefined);
-        throw error;
+      await this.syncWorkflowEnabledState(workflowPath);
+      if (!this.disabledWorkflowPaths.has(workflowPath)) {
+        await this.startWorkflow(workflowPath);
       }
     }
 
@@ -65,6 +83,11 @@ export class RuntimeManager implements StatusSource {
     });
     await Promise.all(stops);
     this.runtimes.clear();
+    for (const workflowPath of this.workflowPaths) {
+      this.updateWorkflowState(workflowPath, {
+        runtimeRunning: false
+      });
+    }
     this.publishSnapshot();
   }
 
@@ -75,6 +98,7 @@ export class RuntimeManager implements StatusSource {
     }
 
     this.workflowPaths.add(absolutePath);
+    this.ensureWorkflowState(absolutePath);
     await this.syncWorkflowEnabledState(absolutePath);
     if (this.started) {
       if (!this.disabledWorkflowPaths.has(absolutePath)) {
@@ -89,6 +113,7 @@ export class RuntimeManager implements StatusSource {
   async reloadWorkflow(workflowPath: string): Promise<void> {
     const absolutePath = path.resolve(workflowPath);
     this.workflowPaths.add(absolutePath);
+    this.ensureWorkflowState(absolutePath);
     await this.syncWorkflowEnabledState(absolutePath);
     await this.stopManagedRuntime(absolutePath);
     if (this.started && !this.disabledWorkflowPaths.has(absolutePath)) {
@@ -103,6 +128,7 @@ export class RuntimeManager implements StatusSource {
     const hadPath = this.workflowPaths.delete(absolutePath);
     this.disabledWorkflowPaths.delete(absolutePath);
     const removed = await this.stopManagedRuntime(absolutePath);
+    this.projectStates.delete(absolutePath);
     if (hadPath || removed) {
       this.publishSnapshot();
     }
@@ -113,7 +139,12 @@ export class RuntimeManager implements StatusSource {
     const absolutePath = path.resolve(workflowPath);
     const hadPath = this.workflowPaths.has(absolutePath);
     this.workflowPaths.add(absolutePath);
+    this.ensureWorkflowState(absolutePath);
     this.disabledWorkflowPaths.delete(absolutePath);
+    this.updateWorkflowState(absolutePath, {
+      enabled: true,
+      fatalError: null
+    });
 
     if (!this.started) {
       this.started = true;
@@ -127,6 +158,10 @@ export class RuntimeManager implements StatusSource {
   async disableWorkflow(workflowPath: string): Promise<boolean> {
     const absolutePath = path.resolve(workflowPath);
     this.disabledWorkflowPaths.add(absolutePath);
+    this.updateWorkflowState(absolutePath, {
+      enabled: false,
+      runtimeRunning: false
+    });
     const removed = await this.stopManagedRuntime(absolutePath);
     this.publishSnapshot();
     return removed;
@@ -146,7 +181,7 @@ export class RuntimeManager implements StatusSource {
 
   snapshot(): StatusSnapshot {
     const snapshots = [...this.runtimes.values()].map((runtime) => runtime.orchestrator.snapshot());
-    return combineSnapshots(snapshots);
+    return combineSnapshots(snapshots, [...this.projectStates.values()]);
   }
 
   dashboardConfig(): { host: string; port: number } | null {
@@ -205,9 +240,27 @@ export class RuntimeManager implements StatusSource {
       scopedLogger.child({ component: "env" }),
       this.projectsRoot
     );
-    const orchestrator = new Orchestrator(workflowPath, scopedLogger, env);
+    const orchestrator = new Orchestrator(workflowPath, scopedLogger, env, {
+      onFatalError: (input) => this.handleFatalError(input)
+    });
 
-    await orchestrator.start();
+    try {
+      await orchestrator.start();
+    } catch (error) {
+      await orchestrator.stop().catch(() => undefined);
+      const handled = await this.handleFatalError({
+        workflowPath,
+        provider: null,
+        stage: "startup",
+        error
+      });
+      if (handled) {
+        return;
+      }
+      throw error;
+    }
+
+    await clearFatalProjectError(workflowPath).catch(() => undefined);
     const workflow = await orchestrator.getCurrentWorkflow();
     const runtime: ManagedRuntime = {
       orchestrator,
@@ -220,15 +273,27 @@ export class RuntimeManager implements StatusSource {
       this.publishSnapshot();
     });
     this.runtimes.set(workflowPath, runtime);
+    this.updateWorkflowState(workflowPath, {
+      enabled: true,
+      runtimeRunning: true,
+      fatalError: null
+    });
   }
 
   private async syncWorkflowEnabledState(workflowPath: string): Promise<void> {
-    const enabled = await readWorkflowEnabled(
-      workflowPath,
-      this.baseEnv,
-      this.projectsRoot,
-      this.logger.child({ workflow_path: workflowPath })
-    );
+    const [enabled, fatalError] = await Promise.all([
+      readWorkflowEnabled(
+        workflowPath,
+        this.baseEnv,
+        this.projectsRoot,
+        this.logger.child({ workflow_path: workflowPath })
+      ),
+      readFatalProjectError(workflowPath)
+    ]);
+    this.updateWorkflowState(workflowPath, {
+      enabled,
+      fatalError
+    });
     if (enabled) {
       this.disabledWorkflowPaths.delete(workflowPath);
       return;
@@ -240,6 +305,9 @@ export class RuntimeManager implements StatusSource {
   private async stopManagedRuntime(workflowPath: string): Promise<boolean> {
     const runtime = this.runtimes.get(workflowPath);
     if (!runtime) {
+      this.updateWorkflowState(workflowPath, {
+        runtimeRunning: false
+      });
       return false;
     }
 
@@ -247,7 +315,76 @@ export class RuntimeManager implements StatusSource {
     runtime.unsubscribe = null;
     await runtime.orchestrator.stop();
     this.runtimes.delete(workflowPath);
+    this.updateWorkflowState(workflowPath, {
+      runtimeRunning: false
+    });
     return true;
+  }
+
+  private ensureWorkflowState(workflowPath: string): WorkflowRuntimeState {
+    const absolutePath = path.resolve(workflowPath);
+    const existing = this.projectStates.get(absolutePath);
+    if (existing) {
+      return existing;
+    }
+
+    const created: WorkflowRuntimeState = {
+      workflowPath: absolutePath,
+      enabled: true,
+      runtimeRunning: false,
+      fatalError: null,
+      updatedAt: new Date().toISOString()
+    };
+    this.projectStates.set(absolutePath, created);
+    return created;
+  }
+
+  private updateWorkflowState(workflowPath: string, updates: Partial<Omit<WorkflowRuntimeState, "workflowPath">>): void {
+    const state = this.ensureWorkflowState(workflowPath);
+    if (updates.enabled !== undefined) {
+      state.enabled = updates.enabled;
+    }
+    if (updates.runtimeRunning !== undefined) {
+      state.runtimeRunning = updates.runtimeRunning;
+    }
+    if (updates.fatalError !== undefined) {
+      state.fatalError = updates.fatalError;
+    }
+    state.updatedAt = new Date().toISOString();
+  }
+
+  private async handleFatalError(input: FatalRuntimeErrorInput): Promise<boolean> {
+    const workflowPath = path.resolve(input.workflowPath);
+    if (!classifyFatalRuntimeError(input)) {
+      return false;
+    }
+    if (this.fatalWorkflowPaths.has(workflowPath)) {
+      return true;
+    }
+
+    this.fatalWorkflowPaths.add(workflowPath);
+    try {
+      const fatalError = this.options.onFatalError
+        ? await this.options.onFatalError({
+            ...input,
+            workflowPath
+          })
+        : await recordFatalProjectError({
+            ...input,
+            workflowPath
+          });
+      this.disabledWorkflowPaths.add(workflowPath);
+      this.updateWorkflowState(workflowPath, {
+        enabled: false,
+        runtimeRunning: false,
+        fatalError
+      });
+      await this.stopManagedRuntime(workflowPath);
+      this.publishSnapshot();
+      return true;
+    } finally {
+      this.fatalWorkflowPaths.delete(workflowPath);
+    }
   }
 }
 
@@ -263,15 +400,22 @@ async function readWorkflowEnabled(
   return buildServiceConfig(workflowPath, definition, env).project.enabled;
 }
 
-function combineSnapshots(snapshots: StatusSnapshot[]): StatusSnapshot {
+function combineSnapshots(snapshots: StatusSnapshot[], projectStates: WorkflowRuntimeState[]): StatusSnapshot {
   const combined = {
     updated_at: new Date().toISOString(),
-    project_count: snapshots.reduce((sum, snapshot) => sum + snapshot.project_count, 0),
+    project_count: projectStates.length,
     running_count: snapshots.reduce((sum, snapshot) => sum + snapshot.running_count, 0),
     retry_count: snapshots.reduce((sum, snapshot) => sum + snapshot.retry_count, 0),
     completed_count: snapshots.reduce((sum, snapshot) => sum + snapshot.completed_count, 0),
     claimed_count: snapshots.reduce((sum, snapshot) => sum + snapshot.claimed_count, 0),
     projects: snapshots.flatMap((snapshot) => snapshot.projects),
+    project_states: projectStates.map((state) => ({
+      workflow_path: state.workflowPath,
+      enabled: state.enabled,
+      runtime_running: state.runtimeRunning,
+      fatal_error: state.fatalError,
+      updated_at: state.updatedAt
+    } satisfies StatusProjectState)),
     running: snapshots.flatMap((snapshot) => snapshot.running),
     retries: snapshots.flatMap((snapshot) => snapshot.retries),
     agent_totals: snapshots.reduce(
@@ -296,6 +440,7 @@ function combineSnapshots(snapshots: StatusSnapshot[]): StatusSnapshot {
   } satisfies StatusSnapshot;
 
   combined.projects.sort((left, right) => left.linear_project.slug.localeCompare(right.linear_project.slug));
+  combined.project_states.sort((left, right) => left.workflow_path.localeCompare(right.workflow_path));
   combined.running.sort((left, right) => left.identifier.localeCompare(right.identifier));
   combined.retries.sort((left, right) => left.due_at_ms - right.due_at_ms);
 

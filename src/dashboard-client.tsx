@@ -116,9 +116,16 @@ function DashboardApp() {
   const summaries = useMemo(() => {
     return new Map(effectiveSnapshot.projects.map((project) => [project.workflow_path, project] as const));
   }, [effectiveSnapshot.projects]);
+  const projectStates = useMemo(() => {
+    return new Map(effectiveSnapshot.project_states.map((project) => [project.workflow_path, project] as const));
+  }, [effectiveSnapshot.project_states]);
+  const hydratedProjects = useMemo(
+    () => projects.map((project) => mergeProjectRuntimeState(project, projectStates.get(project.workflowPath) ?? null)),
+    [projects, projectStates]
+  );
   const selectedProject = useMemo(
-    () => projects.find((project) => project.id === selectedProjectId) ?? null,
-    [projects, selectedProjectId]
+    () => hydratedProjects.find((project) => project.id === selectedProjectId) ?? null,
+    [hydratedProjects, selectedProjectId]
   );
   const selectedSnapshot = useMemo(
     () => filterSnapshotByProject(effectiveSnapshot, selectedProjectId),
@@ -281,7 +288,7 @@ function DashboardApp() {
           </button>
 
           <div className="project-list">
-            {projects.map((project) => (
+            {hydratedProjects.map((project) => (
               <ProjectListItem
                 key={project.id}
                 project={project}
@@ -490,20 +497,22 @@ function ProjectListItem(props: {
   onSelect: () => void;
 }) {
   const { project, summary, selected, onSelect } = props;
-  const meta = project.runtimeRunning
-    ? `${summary?.running_count ?? 0} active · ${summary?.retry_count ?? 0} queued`
-    : "Stopped";
+  const meta = project.fatalError
+    ? `Paused after ${project.fatalError.code}`
+    : project.runtimeRunning
+      ? `${summary?.running_count ?? 0} active · ${summary?.retry_count ?? 0} queued`
+      : "Stopped";
+  const statusClass = project.fatalError ? "fatal" : project.runtimeRunning ? "running" : "stopped";
+  const statusLabel = project.fatalError ? "Paused" : project.runtimeRunning ? "Live" : "Off";
 
   return (
     <button type="button" className={joinClassName("project-row", selected ? "selected" : null)} onClick={onSelect}>
-      <span className={joinClassName("project-avatar", project.runtimeRunning ? "running" : "stopped")}>{projectInitial(project)}</span>
+      <span className={joinClassName("project-avatar", statusClass)}>{projectInitial(project)}</span>
       <span className="project-copy">
         <span className="project-name">{projectLabel(project)}</span>
         <span className="project-meta">{meta}</span>
       </span>
-      <span className={joinClassName("status-pill", project.runtimeRunning ? "running" : "stopped")}>
-        {project.runtimeRunning ? "Live" : "Off"}
-      </span>
+      <span className={joinClassName("status-pill", statusClass)}>{statusLabel}</span>
     </button>
   );
 }
@@ -1303,63 +1312,117 @@ function ProjectOverview(props: {
   }
 
   return (
-    <div className="detail-grid">
-      <DetailItem label="Runtime" value={selectedProject.runtimeRunning ? "Running" : "Stopped"} tone={selectedProject.runtimeRunning ? "good" : "muted"} />
-      <DetailItem label="Linear slug" value={selectedProject.projectSlug} />
-      <DetailItem
-        label="Repository"
-        value={selectedProject.githubRepository ?? "Not set"}
-        suffix={
-          selectedProjectSummary?.linear_project.url ? (
-            <a href={selectedProjectSummary.linear_project.url} target="_blank" rel="noreferrer" className="detail-link">
-              Open Linear
-            </a>
-          ) : null
-        }
-      />
-      <DetailItem
-        label="Linear key"
-        value={selectedProject.usesGlobalLinearApiKey ? "Inherited" : selectedProject.hasLinearApiKey ? "Project override" : "Missing"}
-      />
-      <DetailItem
-        label="XAI key"
-        value={
-          selectedProject.agentProvider !== "grok"
-            ? "Optional"
-            : selectedProject.usesGlobalXaiApiKey
-              ? "Inherited"
-              : selectedProject.hasXaiApiKey
-                ? "Project override"
-                : "Missing"
-        }
-      />
-      <DetailItem
-        label="GitHub token"
-        value={selectedProject.usesGlobalGithubToken ? "Inherited" : selectedProject.hasGithubToken ? "Project override" : "Optional"}
-      />
-      <DetailItem
-        label="Polling"
-        value={`${selectedProject.pollingIntervalMs} ms`}
-        note={selectedProject.usesGlobalPollingIntervalMs ? "Shared default" : "Project override"}
-      />
-      <DetailItem
-        label="Concurrent agents"
-        value={String(selectedProject.maxConcurrentAgents)}
-        note={selectedProject.usesGlobalMaxConcurrentAgents ? "Shared default" : "Project override"}
-      />
-      <DetailItem
-        label="Rate limits"
-        value={renderRateLimitSummary(selectedProjectSummary)}
-      />
+    <>
+      {selectedProject.fatalError ? <FatalErrorPanel fatalError={selectedProject.fatalError} /> : null}
+      <div className="detail-grid">
+        <DetailItem
+          label="Runtime"
+          value={
+            selectedProject.fatalError
+              ? "Paused after fatal error"
+              : selectedProject.runtimeRunning
+                ? "Running"
+                : "Stopped"
+          }
+          tone={selectedProject.fatalError ? "bad" : selectedProject.runtimeRunning ? "good" : "muted"}
+        />
+        <DetailItem label="Linear slug" value={selectedProject.projectSlug} />
+        <DetailItem
+          label="Repository"
+          value={selectedProject.githubRepository ?? "Not set"}
+          suffix={
+            selectedProjectSummary?.linear_project.url ? (
+              <a href={selectedProjectSummary.linear_project.url} target="_blank" rel="noreferrer" className="detail-link">
+                Open Linear
+              </a>
+            ) : null
+          }
+        />
+        <DetailItem
+          label="Linear key"
+          value={selectedProject.usesGlobalLinearApiKey ? "Inherited" : selectedProject.hasLinearApiKey ? "Project override" : "Missing"}
+        />
+        <DetailItem
+          label="XAI key"
+          value={
+            selectedProject.agentProvider !== "grok"
+              ? "Optional"
+              : selectedProject.usesGlobalXaiApiKey
+                ? "Inherited"
+                : selectedProject.hasXaiApiKey
+                  ? "Project override"
+                  : "Missing"
+          }
+        />
+        <DetailItem
+          label="GitHub token"
+          value={selectedProject.usesGlobalGithubToken ? "Inherited" : selectedProject.hasGithubToken ? "Project override" : "Optional"}
+        />
+        <DetailItem
+          label="Polling"
+          value={`${selectedProject.pollingIntervalMs} ms`}
+          note={selectedProject.usesGlobalPollingIntervalMs ? "Shared default" : "Project override"}
+        />
+        <DetailItem
+          label="Concurrent agents"
+          value={String(selectedProject.maxConcurrentAgents)}
+          note={selectedProject.usesGlobalMaxConcurrentAgents ? "Shared default" : "Project override"}
+        />
+        <DetailItem
+          label="Rate limits"
+          value={renderRateLimitSummary(selectedProjectSummary)}
+        />
+      </div>
+    </>
+  );
+}
+
+function FatalErrorPanel(props: { fatalError: NonNullable<ManagedProjectRecord["fatalError"]> }) {
+  const { fatalError } = props;
+  const details = renderFatalErrorDetails(fatalError.details);
+
+  return (
+    <div className="fatal-panel">
+      <div className="fatal-panel-header">
+        <div>
+          <div className="fatal-eyebrow">Fatal runtime error</div>
+          <div className="fatal-title">{fatalError.code}</div>
+        </div>
+        <div className="fatal-meta">{formatAbsoluteTimestamp(fatalError.timestamp)}</div>
+      </div>
+      <p className="fatal-message">{fatalError.message}</p>
+      <div className="fatal-grid">
+        <div>
+          <div className="fatal-label">Provider</div>
+          <div className="fatal-value">{fatalError.provider ?? "Unknown"}</div>
+        </div>
+        <div>
+          <div className="fatal-label">Stage</div>
+          <div className="fatal-value">{humanizeFatalStage(fatalError.stage)}</div>
+        </div>
+        <div>
+          <div className="fatal-label">Log file</div>
+          <div className="fatal-value mono">{fatalError.log_path}</div>
+        </div>
+        {fatalError.issue_identifier ? (
+          <div>
+            <div className="fatal-label">Issue</div>
+            <div className="fatal-value">{fatalError.issue_identifier}</div>
+          </div>
+        ) : null}
+      </div>
+      {details ? <pre className="fatal-details">{details}</pre> : null}
     </div>
   );
 }
 
-function DetailItem(props: { label: string; value: string; note?: string; tone?: "good" | "muted"; suffix?: ReactNode }) {
+function DetailItem(props: { label: string; value: string; note?: string; tone?: "good" | "muted" | "bad"; suffix?: ReactNode }) {
   return (
     <div className="detail-item">
       <div className="detail-label">{props.label}</div>
-      <div className={joinClassName("detail-value", props.tone === "good" ? "good" : null)}>{props.value}</div>
+      <div className={joinClassName("detail-value", props.tone === "good" ? "good" : props.tone === "bad" ? "bad" : null)}>
+        {props.value}
+      </div>
       {props.note ? <div className="detail-note">{props.note}</div> : null}
       {props.suffix ? <div className="detail-suffix">{props.suffix}</div> : null}
     </div>
@@ -1473,6 +1536,10 @@ function buildProjectHeaderSummary(
   project: ManagedProjectRecord,
   summary: StatusSnapshot["projects"][number] | null
 ): string {
+  if (project.fatalError) {
+    return `${project.fatalError.code}: ${project.fatalError.message}`;
+  }
+
   if (!project.runtimeRunning) {
     return "This project is configured but currently stopped.";
   }
@@ -1492,6 +1559,43 @@ function renderRateLimitSummary(summary: StatusSnapshot["projects"][number] | nu
   }
 
   return `${requests.remaining ?? "n/a"}/${requests.limit ?? "n/a"} remaining`;
+}
+
+function humanizeFatalStage(stage: NonNullable<ManagedProjectRecord["fatalError"]>["stage"]): string {
+  switch (stage) {
+    case "startup":
+      return "Startup";
+    case "dispatch":
+      return "Dispatch";
+    case "worker":
+      return "Worker run";
+    case "retry":
+      return "Retry poll";
+    case "reconcile":
+      return "Issue reconcile";
+    default:
+      return stage;
+  }
+}
+
+function renderFatalErrorDetails(details: Record<string, unknown> | null): string | null {
+  if (!details || Object.keys(details).length === 0) {
+    return null;
+  }
+
+  return JSON.stringify(details, null, 2);
+}
+
+function formatAbsoluteTimestamp(value: string): string {
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "medium"
+  }).format(parsed);
 }
 
 function humanizePhase(phase: string): string {
@@ -1781,7 +1885,15 @@ async function toggleProjectRuntime(
     setProjects((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
     setSelectedProjectId(updated.id);
     setProjectFormState(projectToForm(updated));
-    setNotice({ kind: "success", message: intent === "start" ? "Project started." : "Project stopped." });
+    setNotice({
+      kind: updated.fatalError ? "error" : "success",
+      message:
+        intent === "start"
+          ? updated.fatalError
+            ? `Project paused: ${updated.fatalError.message}`
+            : "Project started."
+          : "Project stopped."
+    });
   } catch (error) {
     setNotice({ kind: "error", message: errorMessage(error) });
   }
@@ -1867,6 +1979,22 @@ function projectToForm(project: ManagedProjectRecord): ProjectFormState {
   };
 }
 
+function mergeProjectRuntimeState(
+  project: ManagedProjectRecord,
+  runtimeState: StatusSnapshot["project_states"][number] | null
+): ManagedProjectRecord {
+  if (!runtimeState) {
+    return project;
+  }
+
+  return {
+    ...project,
+    enabled: runtimeState.enabled,
+    runtimeRunning: runtimeState.runtime_running,
+    fatalError: runtimeState.fatal_error
+  };
+}
+
 function globalConfigToForm(globalConfig: GlobalConfigRecord): GlobalFormState {
   return {
     pollingIntervalMs: String(globalConfig.defaults.pollingIntervalMs),
@@ -1944,6 +2072,7 @@ function emptySnapshot(): StatusSnapshot {
     completed_count: 0,
     claimed_count: 0,
     projects: [],
+    project_states: [],
     running: [],
     retries: [],
     agent_totals: {
@@ -1962,12 +2091,14 @@ function filterSnapshotByProject(snapshot: StatusSnapshot, projectId: string | n
   }
 
   const projectMatch = snapshot.projects.filter((project) => project.workflow_path === projectId);
+  const projectStates = snapshot.project_states.filter((project) => project.workflow_path === projectId);
   return {
     ...snapshot,
-    project_count: projectMatch.length,
+    project_count: projectStates.length,
     running: snapshot.running.filter((entry) => entry.workflow_path === projectId),
     retries: snapshot.retries.filter((entry) => entry.workflow_path === projectId),
     projects: projectMatch,
+    project_states: projectStates,
     running_count: snapshot.running.filter((entry) => entry.workflow_path === projectId).length,
     retry_count: snapshot.retries.filter((entry) => entry.workflow_path === projectId).length,
     completed_count: projectMatch.reduce((sum, project) => sum + project.completed_count, 0),
