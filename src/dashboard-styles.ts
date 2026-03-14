@@ -1183,6 +1183,12 @@ export const dashboardStyles = `
     letter-spacing: -0.01em;
   }
 
+  .field-help {
+    color: var(--muted-foreground);
+    font-size: 0.84rem;
+    line-height: 1.4;
+  }
+
   .input,
   .select {
     width: 100%;

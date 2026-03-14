@@ -46,6 +46,7 @@ describe("project setup", () => {
       expect(workflow).toContain("thread_sandbox: danger-full-access");
       expect(workflow).toContain("turn_sandbox_policy:");
       expect(workflow).toContain("type: dangerFullAccess");
+      expect(workflow).toContain("Missing skill files or missing linked PR artifacts are not blockers by themselves.");
       expect(workflow).toContain("## Step 0: Determine current ticket state and route");
       expect(workflow).toContain("## Codex Workpad");
       expect(envFile).toContain('LINEAR_API_KEY="lin_api_123"');

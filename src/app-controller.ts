@@ -5,6 +5,8 @@ import type {
   GlobalConfigInput,
   GlobalConfigRecord,
   ManagedProjectRecord,
+  ProviderModelCatalog,
+  ProviderModelQuery,
   ProjectRuntimeControlInput,
   ProjectSetupInput,
   ProjectSetupResult,
@@ -24,6 +26,7 @@ import {
 import { clearFatalProjectError, recordFatalProjectError, type FatalRuntimeErrorInput } from "./fatal-runtime-errors";
 import { readGlobalConfig, updateGlobalConfig } from "./global-config";
 import { RuntimeManager } from "./runtime";
+import { listProviderModels } from "./provider-models";
 import { StatusServer } from "./status-server";
 import type { WorkflowContext } from "./workflow";
 
@@ -191,6 +194,13 @@ export class AppController implements StatusSource {
 
   async readGlobalConfig(): Promise<GlobalConfigRecord> {
     return readGlobalConfig(this.workflowContext.projectsRoot, this.env);
+  }
+
+  async listProviderModels(input: ProviderModelQuery): Promise<ProviderModelCatalog> {
+    return listProviderModels(input, {
+      baseEnv: this.env,
+      projectsRoot: this.workflowContext.projectsRoot
+    });
   }
 
   async updateGlobalConfig(input: GlobalConfigInput): Promise<GlobalConfigRecord> {

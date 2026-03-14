@@ -37,6 +37,7 @@ import type {
   DashboardSetupContext,
   GlobalConfigRecord,
   ManagedProjectRecord,
+  ProviderModelCatalog,
   ProjectSetupInput,
   ProjectSetupResult,
   ProjectUpdateInput,
@@ -44,6 +45,7 @@ import type {
   StatusRunningEntry,
   StatusSnapshot
 } from "./domain";
+import { agentModelOptions, isKnownAgentModel } from "./agent-models";
 import { buildTranscriptRenderBlocks, commandIconTone, commandTooltip } from "./transcript-render";
 import { formatElapsedShort } from "./tui-layout";
 
@@ -87,6 +89,7 @@ type ProjectFormState = {
 };
 
 const themeStorageKey = "orchestrai-dashboard-theme";
+const CUSTOM_MODEL_SENTINEL = "__custom__";
 
 declare global {
   interface Window {
@@ -106,6 +109,9 @@ function DashboardApp() {
   const [globalFormState, setGlobalFormState] = useState<GlobalFormState>(() => emptyGlobalForm());
   const [projectFormState, setProjectFormState] = useState<ProjectFormState>(() => emptyProjectForm());
   const [createProjectFormState, setCreateProjectFormState] = useState<ProjectFormState>(() => emptyProjectForm());
+  const [globalModelCatalog, setGlobalModelCatalog] = useState<ProviderModelCatalog>(() => fallbackModelCatalog("codex"));
+  const [projectModelCatalog, setProjectModelCatalog] = useState<ProviderModelCatalog>(() => fallbackModelCatalog("codex"));
+  const [createProjectModelCatalog, setCreateProjectModelCatalog] = useState<ProviderModelCatalog>(() => fallbackModelCatalog("codex"));
   const [notice, setNotice] = useState<StatusNotice>(idleNotice());
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [selectedAgentIssueId, setSelectedAgentIssueId] = useState<string | null>(null);
@@ -157,6 +163,22 @@ function DashboardApp() {
   }, [setupContext]);
 
   useEffect(() => {
+    let active = true;
+    void loadProviderModelCatalog({
+      provider: globalFormState.agentProvider,
+      xaiApiKey: globalFormState.clearXaiApiKey ? "" : globalFormState.xaiApiKey,
+      useStoredKey: !globalFormState.clearXaiApiKey && !normalizeOptionalText(globalFormState.xaiApiKey)
+    }).then((catalog) => {
+      if (active) {
+        setGlobalModelCatalog(catalog);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [globalFormState.agentProvider, globalFormState.xaiApiKey, globalFormState.clearXaiApiKey]);
+
+  useEffect(() => {
     if (!selectedProject) {
       setProjectFormState(emptyProjectForm());
       return;
@@ -164,6 +186,39 @@ function DashboardApp() {
 
     setProjectFormState(projectToForm(selectedProject));
   }, [selectedProject]);
+
+  useEffect(() => {
+    let active = true;
+    void loadProviderModelCatalog({
+      provider: projectFormState.agentProvider,
+      projectId: selectedProject?.id ?? null,
+      xaiApiKey: projectFormState.xaiApiKey,
+      useStoredKey: projectFormState.xaiApiKey.trim().length === 0
+    }).then((catalog) => {
+      if (active) {
+        setProjectModelCatalog(catalog);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [projectFormState.agentProvider, projectFormState.xaiApiKey, selectedProject?.id]);
+
+  useEffect(() => {
+    let active = true;
+    void loadProviderModelCatalog({
+      provider: createProjectFormState.agentProvider,
+      xaiApiKey: createProjectFormState.useGlobalXaiApiKey ? null : createProjectFormState.xaiApiKey,
+      useStoredKey: createProjectFormState.useGlobalXaiApiKey
+    }).then((catalog) => {
+      if (active) {
+        setCreateProjectModelCatalog(catalog);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [createProjectFormState.agentProvider, createProjectFormState.xaiApiKey, createProjectFormState.useGlobalXaiApiKey]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -471,11 +526,14 @@ function DashboardApp() {
         }}
         globalConfig={globalConfig}
         globalFormState={globalFormState}
+        globalModelCatalog={globalModelCatalog}
         setGlobalFormState={setGlobalFormState}
         selectedProject={selectedProject}
         projectFormState={projectFormState}
+        projectModelCatalog={projectModelCatalog}
         setProjectFormState={setProjectFormState}
         createProjectFormState={createProjectFormState}
+        createProjectModelCatalog={createProjectModelCatalog}
         setCreateProjectFormState={setCreateProjectFormState}
         notice={notice}
         setNotice={setNotice}
@@ -522,11 +580,14 @@ function SettingsDialog(props: {
   onClose: () => void;
   globalConfig: GlobalConfigRecord;
   globalFormState: GlobalFormState;
+  globalModelCatalog: ProviderModelCatalog;
   setGlobalFormState: Dispatch<SetStateAction<GlobalFormState>>;
   selectedProject: ManagedProjectRecord | null;
   projectFormState: ProjectFormState;
+  projectModelCatalog: ProviderModelCatalog;
   setProjectFormState: Dispatch<SetStateAction<ProjectFormState>>;
   createProjectFormState: ProjectFormState;
+  createProjectModelCatalog: ProviderModelCatalog;
   setCreateProjectFormState: Dispatch<SetStateAction<ProjectFormState>>;
   notice: StatusNotice;
   setNotice: Dispatch<SetStateAction<StatusNotice>>;
@@ -540,11 +601,14 @@ function SettingsDialog(props: {
     onClose,
     globalConfig,
     globalFormState,
+    globalModelCatalog,
     setGlobalFormState,
     selectedProject,
     projectFormState,
+    projectModelCatalog,
     setProjectFormState,
     createProjectFormState,
+    createProjectModelCatalog,
     setCreateProjectFormState,
     notice,
     setNotice,
@@ -579,6 +643,7 @@ function SettingsDialog(props: {
             <GlobalSettingsForm
               globalConfig={globalConfig}
               formState={globalFormState}
+              modelCatalog={globalModelCatalog}
               setFormState={setGlobalFormState}
               notice={notice}
               setNotice={setNotice}
@@ -593,6 +658,7 @@ function SettingsDialog(props: {
             <ProjectSettingsForm
               mode="update"
               formState={projectFormState}
+              modelCatalog={projectModelCatalog}
               setFormState={setProjectFormState}
               selectedProject={selectedProject}
               globalConfig={globalConfig}
@@ -608,6 +674,7 @@ function SettingsDialog(props: {
             <ProjectSettingsForm
               mode="create"
               formState={createProjectFormState}
+              modelCatalog={createProjectModelCatalog}
               setFormState={setCreateProjectFormState}
               selectedProject={null}
               globalConfig={globalConfig}
@@ -624,9 +691,62 @@ function SettingsDialog(props: {
   );
 }
 
+function AgentModelField(props: {
+  label: string;
+  catalog: ProviderModelCatalog;
+  value: string;
+  disabled?: boolean;
+  defaultLabel: string;
+  onChange: (value: string) => void;
+}) {
+  const provider = props.catalog.provider;
+  const options = props.catalog.models;
+  const normalizedValue = props.value.trim();
+  const isCustom = normalizedValue.length > 0 && !options.some((option) => option.value === normalizedValue);
+  const selectValue = isCustom ? CUSTOM_MODEL_SENTINEL : normalizedValue;
+
+  return (
+    <>
+      <Field label={props.label}>
+        <select
+          className="input"
+          value={selectValue}
+          disabled={props.disabled}
+          onChange={(event) => {
+            props.onChange(event.target.value === CUSTOM_MODEL_SENTINEL ? "" : event.target.value);
+          }}
+        >
+          <option value="">{props.defaultLabel}</option>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+          <option value={CUSTOM_MODEL_SENTINEL}>Custom model…</option>
+        </select>
+        {props.catalog.warning ? <div className="field-help">{props.catalog.warning}</div> : null}
+      </Field>
+      {selectValue === CUSTOM_MODEL_SENTINEL ? (
+        <Field label="Custom agent model">
+          <input
+            className="input"
+            value={normalizedValue}
+            disabled={props.disabled}
+            placeholder="Enter a provider-specific model id"
+            onChange={(event) => {
+              props.onChange(event.target.value);
+            }}
+          />
+        </Field>
+      ) : null}
+    </>
+  );
+}
+
 function GlobalSettingsForm(props: {
   globalConfig: GlobalConfigRecord;
   formState: GlobalFormState;
+  modelCatalog: ProviderModelCatalog;
   setFormState: Dispatch<SetStateAction<GlobalFormState>>;
   notice: StatusNotice;
   setNotice: Dispatch<SetStateAction<StatusNotice>>;
@@ -635,7 +755,7 @@ function GlobalSettingsForm(props: {
   setSetupContext: Dispatch<SetStateAction<DashboardSetupContext | null>>;
   onComplete: () => void;
 }) {
-  const { globalConfig, formState, setFormState, notice, setNotice, setProjects, setSelectedProjectId, setSetupContext, onComplete } =
+  const { globalConfig, formState, modelCatalog, setFormState, notice, setNotice, setProjects, setSelectedProjectId, setSetupContext, onComplete } =
     props;
 
   return (
@@ -726,10 +846,7 @@ function GlobalSettingsForm(props: {
             className="input"
             value={formState.agentProvider}
             onChange={(event) => {
-              setFormState((current) => ({
-                ...current,
-                agentProvider: event.target.value as AgentProvider
-              }));
+              setFormState((current) => updateAgentProvider(current, event.target.value as AgentProvider));
             }}
           >
             <option value="codex">Codex</option>
@@ -737,19 +854,18 @@ function GlobalSettingsForm(props: {
             <option value="grok">Grok</option>
           </select>
         </Field>
-        <Field label="Shared agent model">
-          <input
-            className="input"
-            value={formState.agentModel}
-            placeholder="inherit project default"
-            onChange={(event) => {
-              setFormState((current) => ({
-                ...current,
-                agentModel: event.target.value
-              }));
-            }}
-          />
-        </Field>
+        <AgentModelField
+          label="Shared agent model"
+          catalog={modelCatalog}
+          value={formState.agentModel}
+          defaultLabel="Provider default"
+          onChange={(value) => {
+            setFormState((current) => ({
+              ...current,
+              agentModel: value
+            }));
+          }}
+        />
       </div>
 
       <div className="toggle-list">
@@ -806,6 +922,7 @@ function GlobalSettingsForm(props: {
 function ProjectSettingsForm(props: {
   mode: "create" | "update";
   formState: ProjectFormState;
+  modelCatalog: ProviderModelCatalog;
   setFormState: Dispatch<SetStateAction<ProjectFormState>>;
   selectedProject: ManagedProjectRecord | null;
   globalConfig: GlobalConfigRecord;
@@ -815,7 +932,7 @@ function ProjectSettingsForm(props: {
   setSelectedProjectId: Dispatch<SetStateAction<string | null>>;
   onComplete: () => void;
 }) {
-  const { mode, formState, setFormState, selectedProject, globalConfig, notice, setNotice, setProjects, setSelectedProjectId, onComplete } =
+  const { mode, formState, modelCatalog, setFormState, selectedProject, globalConfig, notice, setNotice, setProjects, setSelectedProjectId, onComplete } =
     props;
 
   return (
@@ -937,7 +1054,7 @@ function ProjectSettingsForm(props: {
             value={formState.agentProvider}
             disabled={formState.useGlobalAgentProvider}
             onChange={(event) => {
-              setFormState((current) => ({ ...current, agentProvider: event.target.value as AgentProvider }));
+              setFormState((current) => updateAgentProvider(current, event.target.value as AgentProvider));
             }}
           >
             <option value="codex">Codex</option>
@@ -952,17 +1069,16 @@ function ProjectSettingsForm(props: {
             setFormState((current) => ({ ...current, useGlobalAgentProvider: checked }));
           }}
         />
-        <Field label="Agent model">
-          <input
-            className="input"
-            value={formState.agentModel}
-            disabled={formState.useGlobalAgentModel}
-            placeholder={formState.useGlobalAgentModel ? "Using shared model" : "Project model override"}
-            onChange={(event) => {
-              setFormState((current) => ({ ...current, agentModel: event.target.value }));
-            }}
-          />
-        </Field>
+        <AgentModelField
+          label="Agent model"
+          catalog={modelCatalog}
+          value={formState.agentModel}
+          disabled={formState.useGlobalAgentModel}
+          defaultLabel={formState.useGlobalAgentModel ? "Using shared model" : "Provider default"}
+          onChange={(value) => {
+            setFormState((current) => ({ ...current, agentModel: value }));
+          }}
+        />
         <ToggleRow
           checked={formState.useGlobalAgentModel}
           label="Use shared agent model"
@@ -1948,6 +2064,15 @@ function projectFormToApiInput(formState: ProjectFormState): ProjectSetupInput {
   };
 }
 
+function updateAgentProvider<T extends { agentProvider: AgentProvider; agentModel: string }>(state: T, provider: AgentProvider): T {
+  const shouldClearModel = state.agentModel.trim().length > 0 && !isKnownAgentModel(provider, state.agentModel);
+  return {
+    ...state,
+    agentProvider: provider,
+    agentModel: shouldClearModel ? "" : state.agentModel
+  };
+}
+
 function projectLabel(project: ManagedProjectRecord): string {
   return normalizeOptionalText(project.displayName) ?? project.projectSlug;
 }
@@ -2182,6 +2307,31 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
 
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function fallbackModelCatalog(provider: AgentProvider, warning: string | null = null): ProviderModelCatalog {
+  return {
+    provider,
+    models: agentModelOptions(provider),
+    source: "static",
+    warning
+  };
+}
+
+async function loadProviderModelCatalog(input: {
+  provider: AgentProvider;
+  projectId?: string | null;
+  xaiApiKey?: string | null;
+  useStoredKey?: boolean;
+}): Promise<ProviderModelCatalog> {
+  try {
+    return await fetchJson<ProviderModelCatalog>("/api/provider-models", {
+      method: "POST",
+      body: JSON.stringify(input)
+    });
+  } catch (error) {
+    return fallbackModelCatalog(input.provider, errorMessage(error));
+  }
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {

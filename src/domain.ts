@@ -417,6 +417,25 @@ export interface GlobalDefaults {
   agentModel: string;
 }
 
+export interface AgentModelDescriptor {
+  value: string;
+  label: string;
+}
+
+export interface ProviderModelCatalog {
+  provider: AgentProvider;
+  models: AgentModelDescriptor[];
+  source: "static" | "dynamic" | "dynamic_fallback";
+  warning: string | null;
+}
+
+export interface ProviderModelQuery {
+  provider: AgentProvider;
+  projectId?: string | null;
+  xaiApiKey?: string | null;
+  useStoredKey?: boolean;
+}
+
 export interface GlobalConfigRecord {
   projectsRoot: string;
   envFilePath: string;

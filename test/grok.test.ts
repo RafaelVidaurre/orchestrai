@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AgentRuntimeEvent, ServiceConfig } from "../src/domain";
 import { GrokApiSession } from "../src/grok";
+import { ServiceError } from "../src/errors";
 import { Logger } from "../src/logger";
 
 const tempRoots: string[] = [];
@@ -310,6 +311,43 @@ describe("GrokApiSession", () => {
     expect(events.some((event) => event.message === "replace_in_file completed")).toBe(true);
     expect(JSON.stringify(requests[1]?.input)).toContain('\\"replaced\\": 1');
     expect(await readFile(path.join(root, "notes.txt"), "utf8")).toBe("beta");
+  });
+
+  it("surfaces top-level xAI permission errors in the thrown message", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "grok-permission-"));
+    tempRoots.push(root);
+
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          code: "The caller does not have permission to execute the specified operation",
+          error: "Your newly created team doesn't have any credits or licenses yet."
+        }),
+        {
+          status: 403,
+          headers: {
+            "content-type": "application/json"
+          }
+        }
+      );
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    const session = new GrokApiSession(
+      configFixture(root),
+      root,
+      process.env,
+      new Logger({}, { minimumLevel: "error", writeToStreams: false }),
+      () => undefined
+    );
+
+    await session.start();
+
+    await expect(session.runTurn("Reply with OK")).rejects.toMatchObject({
+      name: "ServiceError",
+      code: "grok_api_status",
+      message: "Grok API returned HTTP 403: Your newly created team doesn't have any credits or licenses yet."
+    } satisfies Partial<ServiceError>);
   });
 });
 

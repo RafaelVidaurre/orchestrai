@@ -3,6 +3,8 @@ import http, { type ServerResponse } from "node:http";
 import path from "node:path";
 
 import type {
+  ProviderModelCatalog,
+  ProviderModelQuery,
   DashboardBootstrap,
   DashboardSetupContext,
   GlobalConfigInput,
@@ -24,6 +26,7 @@ export interface DashboardProjectSetupService {
   dashboardSetupContext(): Promise<DashboardSetupContext>;
   readGlobalConfig(): Promise<GlobalConfigRecord>;
   updateGlobalConfig(input: GlobalConfigInput): Promise<GlobalConfigRecord>;
+  listProviderModels(input: ProviderModelQuery): Promise<ProviderModelCatalog>;
   listProjects(): Promise<ManagedProjectRecord[]>;
   createProject(input: ProjectSetupInput): Promise<ProjectSetupResult>;
   updateProject(input: ProjectUpdateInput): Promise<ManagedProjectRecord>;
@@ -155,6 +158,11 @@ export class StatusServer {
       return;
     }
 
+    if (request.method === "POST" && url.pathname === "/api/provider-models") {
+      await this.handleProviderModels(request, response);
+      return;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/projects") {
       await this.handleListProjects(response);
       return;
@@ -242,6 +250,25 @@ export class StatusServer {
     } catch (error) {
       response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ error: error instanceof Error ? error.message : "Failed to read global config" }));
+    }
+  }
+
+  private async handleProviderModels(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+    if (!this.projectSetupService) {
+      response.writeHead(503, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: "Project setup is not available in this runtime." }));
+      return;
+    }
+
+    try {
+      const body = await readJsonBody(request);
+      const result = await this.projectSetupService.listProviderModels(validateProviderModelQuery(body));
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      const statusCode = error instanceof ServiceError && error.code === "invalid_project_setup" ? 400 : 500;
+      response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({ error: error instanceof Error ? error.message : "Failed to list provider models" }));
     }
   }
 
@@ -1797,6 +1824,24 @@ function validateProjectDeleteInput(value: unknown): { id: string } {
 
 function validateProjectRuntimeControlInput(value: unknown): ProjectRuntimeControlInput {
   return validateProjectDeleteInput(value);
+}
+
+function validateProviderModelQuery(value: unknown): ProviderModelQuery {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new ServiceError("invalid_project_setup", "Provider model payload must be a JSON object");
+  }
+
+  const input = value as Record<string, unknown>;
+  if (input.provider !== "codex" && input.provider !== "claude" && input.provider !== "grok") {
+    throw new ServiceError("invalid_project_setup", "Provider is required");
+  }
+
+  return {
+    provider: input.provider,
+    projectId: typeof input.projectId === "string" ? input.projectId : null,
+    xaiApiKey: typeof input.xaiApiKey === "string" ? input.xaiApiKey : null,
+    useStoredKey: input.useStoredKey !== false
+  };
 }
 
 function defaultSetupContext(): DashboardSetupContext {

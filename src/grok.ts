@@ -1073,8 +1073,29 @@ async function parseStreamingResponse(
 }
 
 function extractApiErrorMessage(payload: GrokResponse): string | null {
-  const error = asRecord(payload.error);
-  return typeof error?.message === "string" && error.message.trim().length > 0 ? error.message.trim() : null;
+  const record = asRecord(payload as unknown);
+  if (!record) {
+    return null;
+  }
+
+  const structuredError = asRecord(record.error);
+  if (typeof structuredError?.message === "string" && structuredError.message.trim().length > 0) {
+    return structuredError.message.trim();
+  }
+
+  if (typeof record.error === "string" && record.error.trim().length > 0) {
+    return record.error.trim();
+  }
+
+  if (typeof record.message === "string" && record.message.trim().length > 0) {
+    return record.message.trim();
+  }
+
+  if (typeof record.code === "string" && record.code.trim().length > 0) {
+    return record.code.trim();
+  }
+
+  return null;
 }
 
 function extractRateLimitHeaders(headers: Headers): Record<string, unknown> | null {
